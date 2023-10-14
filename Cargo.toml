@@ -10,4 +10,4 @@ tokio = { version = "*", features = ["full"] }
 reqwest = { version = "*", features = ["default"] }
 regex = { version = "*", features = ["default"] }
 futures = { version = "*", features = ["default"] }
-serde_json = { version = "*", features = ["default"] }
+serde_json = { version = "*", features = ["default","preserve_order"] }

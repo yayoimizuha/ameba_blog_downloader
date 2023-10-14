@@ -1,32 +1,65 @@
 use futures::future;
 use reqwest::Client;
-use tokio::task;
+use tokio::{task, time};
 use regex::Regex;
 
-// const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
-//     "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
-//     "morningmusume15ki", "morningmusume16ki", "beyooooonds-rfro", "beyooooonds-chicatetsu",
-//     "beyooooonds", "ocha-norma", "countrygirls", "risa-ogata", "kumai-yurina-blog",
-//     "sudou-maasa-blog", "sugaya-risako-blog", "miyamotokarin-official", "kobushi-factory",
-//     "sayumimichishige-blog", "kudo--haruka", "airisuzuki-officialblog", "angerme-ayakawada",
-//     "miyazaki-yuka-blog", "tsugunaga-momoko-blog", "tokunaga-chinami-blog", "c-ute-official",
-//     "tanakareina-blog"];
-const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika"];
+const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
+    "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
+    "morningmusume15ki", "morningmusume16ki", "beyooooonds-rfro", "beyooooonds-chicatetsu",
+    "beyooooonds", "ocha-norma", "countrygirls", "risa-ogata", "kumai-yurina-blog",
+    "sudou-maasa-blog", "sugaya-risako-blog", "miyamotokarin-official", "kobushi-factory",
+    "sayumimichishige-blog", "kudo--haruka", "airisuzuki-officialblog", "angerme-ayakawada",
+    "miyazaki-yuka-blog", "tsugunaga-momoko-blog", "tokunaga-chinami-blog", "c-ute-official",
+    "tanakareina-blog"];
+
+// const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika"];
 
 
-async fn get_page_count(client: Client, name: &str, order: usize, page_count: Regex) -> String {
-    // println!("start: {order}_{name}");
-    let response = client.get(&format!("https://ameblo.jp/{name}/entrylist.html"))
-        .send().await.unwrap();
-    let text = response.text().await.unwrap();
-    println!("end: {order}_{name}");
-    let mut json = page_count.captures(&text).unwrap().get(0).unwrap().as_str().to_string();
-    json.pop();
-    let _json = json.replacen("<script>window.INIT_DATA=", "", 1);
-    let json_parse: serde_json::Value = serde_json::from_str(&_json).unwrap();
-    println!("page count: {:?}", json_parse["entryState"]["blogPageMap"]);
+async fn get_page_count(client: Client, name: &str, _order: usize, page_count: Regex) -> u64 {
+    let mut page_nums: Option<u64> = None;
 
-    text
+    let async_wait = |t: u64| async move {
+        time::sleep(time::Duration::from_millis(t)).await
+    };
+    while page_nums.is_none() {
+        match client.get(&format!("https://ameblo.jp/{name}/entrylist.html"))
+            .send().await {
+            Ok(response) => {
+                let text = response.text().await.unwrap();
+                match page_count.captures(&*text).unwrap().get(0).
+                    ok_or(&text) {
+                    Ok(matched_text) => {
+                        let mut json_str = matched_text.as_str().to_string();
+                        json_str.pop();
+                        json_str = json_str.replacen("<script>window.INIT_DATA=", "", 1);
+                        match serde_json::from_str::<serde_json::Value>(&json_str) {
+                            Ok(json) => {
+                                let _ = json["entryState"]["blogPageMap"].as_object().unwrap().iter()
+                                    .map(|x| {
+                                        page_nums = Option::from(x.1["paging"]["max_page"].as_u64().unwrap());
+                                    }).collect::<Vec<_>>();
+                            }
+                            Err(err) => {
+                                eprintln!("Failed to parse json string: {}", err);
+                                async_wait(1500).await;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to get json string: {}", err);
+                        async_wait(1500).await;
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("Failed to get entry_list page.: {}", err);
+                async_wait(1500).await;
+            }
+        }
+        async_wait(1500).await;
+    }
+    page_nums.unwrap()
+    //page_count
 }
 
 
@@ -41,5 +74,7 @@ async fn main() {
                                               NAMES[i], i, page_count.clone()));
         tasks.push(task);
     }
-    let _results = future::join_all(tasks).await;
+    for i in future::join_all(tasks).await {
+        println!("{}", i.unwrap());
+    }
 }
