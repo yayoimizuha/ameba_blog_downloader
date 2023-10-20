@@ -1,4 +1,6 @@
+use std::ops::Deref;
 use futures::future;
+use futures::stream::iter;
 use reqwest::Client;
 use tokio::{task, time};
 use regex::Regex;
@@ -74,7 +76,15 @@ async fn main() {
                                               NAMES[i], i, page_count.clone()));
         tasks.push(task);
     }
-    for i in future::join_all(tasks).await {
-        println!("{}", i.unwrap());
+
+    let list_page_count: Vec<_> = future::join_all(tasks).await.iter()
+        .map(|x| { x.as_ref().unwrap().clone() }).collect();
+    for &i in &list_page_count {
+        println!("{}", i);
+    }
+    for i in 0..NAMES.len() {
+        for j in 1..list_page_count[i] {
+            println!("https://ameblo.jp/{}/page-{}.html", NAMES[i], j);
+        }
     }
 }
