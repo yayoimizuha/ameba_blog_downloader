@@ -7,11 +7,15 @@ use ndarray::Array;
 // 参考: https://github.com/AndreyGermanov/yolov8_onnx_rust/blob/5b28d2550d715f7dbed8ce31b5fdb8e000fa77f6/src/main.rs
 
 fn main() {
-    let image_path = r"C:\Users\tomokazu\PycharmProjects\helloproject-ai\稲場愛香=juicejuice-official=12737097989-2.jpg";
-    let onnx_path = r"C:\Users\tomokazu\PycharmProjects\helloproject-ai\retinaface.onnx";
+    let image_path = r"manaka_test.jpg";
+    let onnx_path = r"retinaface.onnx";
     match fs::metadata(onnx_path) {
-        Ok(_) => println!("File exist"),
-        Err(_) => println!("File not exist")
+        Ok(_) => println!("RetinaFace File exist"),
+        Err(_) => eprintln!("RetinaFace File not exist")
+    }
+    match fs::metadata(image_path) {
+        Ok(_) => println!("image File exist"),
+        Err(_) => eprintln!("image File not exist")
     }
 
     tracing_subscriber::fmt::init();
@@ -41,9 +45,9 @@ fn main() {
     let onnx_input = vec![Value::from_array(session.allocator(),
                                             &image_layout).unwrap()];
     let model_res = session.run(onnx_input).unwrap();
-    println!("{:?}", model_res.get(0));
-    println!("{:?}", model_res.get(1));
-    println!("{:?}", model_res.get(2));
+    println!("{:?}", model_res.get(0).unwrap().to_owned());
+    println!("{:?}", model_res.get(1).unwrap());
+    println!("{:?}", model_res.get(2).unwrap());
 
     println!("{}", image.as_bytes().len());
     return;
