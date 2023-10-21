@@ -3,6 +3,7 @@ use image::{GenericImageView};
 use ort::{Environment, GraphOptimizationLevel, SessionBuilder, Value};
 use ort::ExecutionProvider;
 use ndarray::Array;
+use ort::execution_providers::CUDAExecutionProviderOptions;
 
 // 参考: https://github.com/AndreyGermanov/yolov8_onnx_rust/blob/5b28d2550d715f7dbed8ce31b5fdb8e000fa77f6/src/main.rs
 
@@ -21,7 +22,7 @@ fn main() {
     tracing_subscriber::fmt::init();
     let environment = Environment::builder()
         .with_name("RetinaFace")
-        .with_execution_providers([ExecutionProvider::CPU(Default::default())])
+        .with_execution_providers([ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default())])
         .build().unwrap()
         .into_arc();
 
@@ -32,23 +33,27 @@ fn main() {
 
     let image = image::open(image_path).unwrap();
     let (image_width, image_height) = (image.width(), image.height());
-    let mut image_arr = Array::zeros((1usize, 3usize, image_height as usize, image_width as usize)).into_dyn();
+
+    let mut image_arr = Array::<f32, _>::zeros((1usize, 3usize, image_height as usize, image_width as usize)).into_dyn();
     for pixel in image.pixels() {
         let x = pixel.0 as usize;
         let y = pixel.1 as usize;
         let [r, g, b, _] = pixel.2.0;
-        image_arr[[0, 0, y, x]] = (r as f32) / 255.0;
-        image_arr[[0, 1, y, x]] = (g as f32) / 255.0;
-        image_arr[[0, 2, y, x]] = (b as f32) / 255.0;
+        image_arr[[0, 0, y, x]] = (r as f32) / 1.0;
+        image_arr[[0, 1, y, x]] = (g as f32) / 1.0;
+        image_arr[[0, 2, y, x]] = (b as f32) / 1.0;
     }
     let image_layout = image_arr.as_standard_layout();
+
+
     let onnx_input = vec![Value::from_array(session.allocator(),
                                             &image_layout).unwrap()];
+    println!("{:?}", onnx_input);
+    println!("{}", onnx_input.get(0).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
     let model_res = session.run(onnx_input).unwrap();
-    println!("{:?}", model_res.get(0).unwrap().to_owned());
-    println!("{:?}", model_res.get(1).unwrap());
-    println!("{:?}", model_res.get(2).unwrap());
+    println!("{:?}", model_res.get(0).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
+    println!("{:?}", model_res.get(1).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
+    println!("{:?}", model_res.get(2).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
 
-    println!("{}", image.as_bytes().len());
     return;
 }

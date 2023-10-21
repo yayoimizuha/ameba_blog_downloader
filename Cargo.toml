@@ -11,7 +11,7 @@ reqwest = { version = "*", features = ["default"] }
 regex = { version = "*", features = ["default"] }
 futures = { version = "*", features = ["default"] }
 serde_json = { version = "*", features = ["default", "preserve_order"] }
-ort = { version = "*", features = ["download-binaries", "half"] }
+ort = { git = "https://github.com/pykeio/ort", branch = "main" }
 tract-onnx = { version = "*", features = ["default"] }
 image = { version = "*", features = ["default", "jpeg"] }
 tracing-subscriber = { version = "*", features = ["fmt", "env-filter"] }
