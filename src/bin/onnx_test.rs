@@ -60,20 +60,7 @@ fn main() -> () {
     // println!("{:?}", onnx_input);
     // println!("{}", onnx_input.get(0).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
     let model_res = session.run(onnx_input).unwrap();
-    // println!("{:?}", model_res);
-    // println!("{:?}", model_res.get(0).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
-    // println!("{:?}", model_res.get(1).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
-    // println!("{:?}", model_res.get(2).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
 
-    // println!("{:?}", model_res.get(2).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
-
-    // if let [a, b, c] = &model_res.into_iter().map(|output| {
-    //     output.try_extract::<f32>().unwrap().view().to_owned()
-    // }).collect::<Vec<_>>()[..] {
-    //     println!("{:?}", [a, b, c]);
-    // } else {
-    //     panic!()
-    // };
     let [loc, conf, land] = match &model_res[..] {
         [loc, conf, land, ..] => [loc, conf, land].map(|x| {
             x.try_extract::<f32>().unwrap().view().to_owned()
