@@ -1,43 +1,16 @@
 use futures::future;
-use futures::stream::iter;
 use regex::Regex;
 use reqwest::Client;
-use std::ops::Deref;
 use tokio::{task, time};
 
-const NAMES: &[&str] = &[
-    "angerme-ss-shin",
-    "angerme-amerika",
-    "angerme-new",
-    "juicejuice-official",
-    "tsubaki-factory",
-    "morningmusume-9ki",
-    "morningmusume-10ki",
-    "mm-12ki",
-    "morningm-13ki",
-    "morningmusume15ki",
-    "morningmusume16ki",
-    "beyooooonds-rfro",
-    "beyooooonds-chicatetsu",
-    "beyooooonds",
-    "ocha-norma",
-    "countrygirls",
-    "risa-ogata",
-    "kumai-yurina-blog",
-    "sudou-maasa-blog",
-    "sugaya-risako-blog",
-    "miyamotokarin-official",
-    "kobushi-factory",
-    "sayumimichishige-blog",
-    "kudo--haruka",
-    "airisuzuki-officialblog",
-    "angerme-ayakawada",
-    "miyazaki-yuka-blog",
-    "tsugunaga-momoko-blog",
-    "tokunaga-chinami-blog",
-    "c-ute-official",
-    "tanakareina-blog",
-];
+const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
+    "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
+    "morningmusume15ki", "morningmusume16ki", "beyooooonds-rfro", "beyooooonds-chicatetsu",
+    "beyooooonds", "ocha-norma", "countrygirls", "risa-ogata", "kumai-yurina-blog",
+    "sudou-maasa-blog", "sugaya-risako-blog", "miyamotokarin-official", "kobushi-factory",
+    "sayumimichishige-blog", "kudo--haruka", "airisuzuki-officialblog", "angerme-ayakawada",
+    "miyazaki-yuka-blog", "tsugunaga-momoko-blog", "tokunaga-chinami-blog", "c-ute-official",
+    "tanakareina-blog", ];
 
 // const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika"];
 
