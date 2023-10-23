@@ -1,6 +1,6 @@
 use image::GenericImageView;
 use ndarray::Array;
-use ort::execution_providers::CPUExecutionProviderOptions;
+use ort::execution_providers::{CPUExecutionProviderOptions, CUDAExecutionProviderOptions, TensorRTExecutionProviderOptions};
 use ort::ExecutionProvider;
 use ort::{Environment, GraphOptimizationLevel, SessionBuilder, Value};
 use std::fs;
@@ -25,8 +25,8 @@ fn main() -> () {
         .with_name("RetinaFace")
         //.with_execution_providers([ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default())])
         .with_execution_providers([
-            // ExecutionProvider::TensorRT(TensorRTExecutionProviderOptions::default()),
-            // ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default()),
+            ExecutionProvider::TensorRT(TensorRTExecutionProviderOptions::default()),
+            ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default()),
             // ExecutionProvider::DirectML(DirectMLExecutionProviderOptions::default()),
             // ExecutionProvider::OpenVINO(OpenVINOExecutionProviderOptions::default()),
             ExecutionProvider::CPU(CPUExecutionProviderOptions::default()),
