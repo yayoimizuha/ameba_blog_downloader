@@ -1,6 +1,6 @@
 use std::cmp::max;
-use image::{DynamicImage, GenericImage, GenericImageView, ImageBuffer, Rgb};
-use ndarray::Array;
+use image::{DynamicImage, GenericImage, GenericImageView, ImageBuffer, Rgb, Rgb32FImage};
+use ndarray::{Array, ArrayBase, IxDyn, OwnedRepr};
 use ort::execution_providers::{CPUExecutionProviderOptions, CUDAExecutionProviderOptions, TensorRTExecutionProviderOptions};
 use ort::ExecutionProvider;
 use ort::{Environment, GraphOptimizationLevel, SessionBuilder, Value};
@@ -12,37 +12,38 @@ use imageproc::drawing::Canvas;
 
 // 参考: https://github.com/AndreyGermanov/yolov8_onnx_rust/blob/5b28d2550d715f7dbed8ce31b5fdb8e000fa77f6/src/main.rs
 
-fn prepare_image(input: DynamicImage, max_size: u32) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+fn prepare_image(input: DynamicImage, max_size: u32) -> ArrayBase<OwnedRepr<f32>, IxDyn> {
     let mut resized = input.clone();
     let (input_width, input_height) = (input.width(), input.height());
-    if input_width > max_size || input_height > max_size {
-        if input_width > input_height {
-            resized = input.resize(max_size, max_size, FilterType::Nearest);
-        }
-        if input_height >= input_width {
-            resized = input.resize(max_size, max_size, FilterType::Nearest);
-        }
-    }
-    let mut canvas =
-        ImageBuffer::from_pixel(max_size, max_size, Rgb::<f32>([0f32; 3]));
+    resized = input.resize(max_size, max_size, FilterType::Nearest);
+    // if input_width > input_height {}
+    // if input_height >= input_width {
+    //     resized = input.resize(max_size, max_size, FilterType::Nearest);
+    // };
+
+    let mut canvas = Rgb32FImage::new(max_size, max_size);
+
     let (resized_width, resized_height) = (resized.width(), resized.height());
+    let mut onnx_input =
+        Array::<f32, _>::zeros((1usize, 3usize, max_size as usize, max_size as usize)).into_dyn();
     for (x, y, pixel) in resized.into_rgb32f().enumerate_pixels() {
         let [mut r, mut g, mut b] = pixel.0;
         if x == 0 && y == 0 { println!("{:?}", pixel) }
-        r -= 0.485;
+        b -= 0.485;
         g -= 0.456;
-        b -= 0.406;
-        r /= 0.229;
+        r -= 0.406;
+        b /= 0.229;
         g /= 0.224;
-        b /= 0.225;
-        canvas.put_pixel((max_size - resized_width) / 2 + x, y,
-                         Rgb([r, g, b]));
+        r /= 0.225;
+        onnx_input[[0usize, 0, y as usize, x as usize]] = b;
+        onnx_input[[0usize, 1, y as usize, x as usize]] = g;
+        onnx_input[[0usize, 2, y as usize, x as usize]] = r;
     }
-    canvas
+    onnx_input
 }
 
 fn main() -> () {
-    let image_path = r"manaka_test.jpg";
+    let image_path = r"rgb.png";
     let onnx_path = r"C:\Users\tomokazu\PycharmProjects\helloproject-ai\retinaface.onnx";
     match fs::metadata(onnx_path) {
         Ok(_) => println!("RetinaFace File exist"),
@@ -73,29 +74,33 @@ fn main() -> () {
         .with_intra_threads(1).unwrap()
         .with_model_from_file(onnx_path).unwrap();
 
-    let image = image::open(image_path).unwrap();
+    let image: DynamicImage = image::open(image_path).unwrap();
     // println!("{:?}", Canvas::get_pixel(&image, 0, 0));
-    let image = prepare_image(image.clone(), 640).clone();
-    DynamicImage::from(image.clone()).to_rgb8().save("test.jpg").unwrap();
+    let image_arr = prepare_image(image.clone(), 5).clone();
+    println!("{}", image_arr);
+    // DynamicImage::from(image.clone()).to_rgb8().save("test.jpg").unwrap();
 
-    let (image_width, image_height) = (image.width(), image.height());
+    // let (image_width, image_height) = (image.width(), image.height());
 
-    let mut image_arr =
-        Array::<f32, _>::zeros((1usize, 3usize, image_height as usize, image_width as usize))
-            .into_dyn();
-    for pixel in image.enumerate_pixels() {
-        let x = pixel.0 as usize;
-        let y = pixel.1 as usize;
-        let [r, g, b] = pixel.2.0;
-        image_arr[[0, 0, y, x]] = (r as f32) / 1.0;
-        image_arr[[0, 1, y, x]] = (g as f32) / 1.0;
-        image_arr[[0, 2, y, x]] = (b as f32) / 1.0;
-    }
+    // let mut image_arr =
+    //     Array::<f32, _>::zeros((1usize, 3usize, image_height as usize, image_width as usize))
+    //         .into_dyn();
+    // for (x, y, pixel) in image.pixels() {
+    //     let [r, g, b, _] = pixel.0;
+    //     image_arr[[0, 0, y as usize, x as usize]] = (r as f32) / 1.0;
+    //     image_arr[[0, 1, y as usize, x as usize]] = (g as f32) / 1.0;
+    //     image_arr[[0, 2, y as usize, x as usize]] = (b as f32) / 1.0;
+    // }
+    // for (x, y, pixel) in image.enumerate_pixels() {
+    //     for i in 0..2usize {
+    //         image_arr[[0, i, y as usize, x as usize]] = pixel.0[i];
+    //     }
+    // }
     let image_layout = image_arr.as_standard_layout();
 
     let onnx_input = vec![Value::from_array(session.allocator(), &image_layout).unwrap()];
     println!("{:?}", onnx_input);
-    // println!("{}", onnx_input.get(0).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
+    println!("{}", onnx_input.get(0).unwrap().try_extract::<f32>().unwrap().view().clone().into_owned());
     let model_res = session.run(onnx_input).unwrap();
 
     let [loc, conf, land] = match &model_res[..] {
