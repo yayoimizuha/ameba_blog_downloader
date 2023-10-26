@@ -1,5 +1,5 @@
 use image::DynamicImage;
-use ndarray::{Array, ArrayBase, IxDyn, OwnedRepr};
+use ndarray::{Array, ArrayBase, IxDyn, OwnedRepr, s};
 use ort::execution_providers::{CPUExecutionProviderOptions, CUDAExecutionProviderOptions, TensorRTExecutionProviderOptions};
 use ort::ExecutionProvider;
 use ort::{Environment, GraphOptimizationLevel, SessionBuilder, Value};
@@ -74,8 +74,13 @@ fn main() -> () {
         }),
         &_ => unreachable!(),
     };
-    println!("{:?}", [loc, conf, land]);
+    // println!("{:?}", [loc.clone(), conf.clone(), land.clone()]);
 
+    for i in 0..loc.clone().shape()[0] {
+        println!("{:?}", loc.slice(s![i,..]).iter().map(|&x| { x * scale }).collect::<Vec<_>>());
+        println!("{}", conf.slice(s![i]));
+        println!("{:?}", Array::from_shape_vec((5, 2), land.slice(s![i,..]).iter().map(|&x| { x * scale }).collect()).unwrap());
+    }
 
     return ();
 }
