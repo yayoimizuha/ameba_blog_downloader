@@ -18,3 +18,4 @@ tracing-subscriber = { version = "*", features = ["fmt", "env-filter"] }
 rand = { version = "*", features = ["default"] }
 ndarray = { version = "*", features = ["default"] }
 imageproc = { version = "*", features = ["default"] }
+include-bytes-zstd = { version = "0.1.0" }
