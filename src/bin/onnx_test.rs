@@ -1,4 +1,4 @@
-use image::{DynamicImage, GenericImageView, Rgb};
+use image::{DynamicImage, Rgb};
 use ndarray::{Array, ArrayBase, Ix1, Ix2, IxDyn, OwnedRepr, s};
 use ort::execution_providers::{CPUExecutionProviderOptions, CUDAExecutionProviderOptions, TensorRTExecutionProviderOptions};
 use ort::ExecutionProvider;
@@ -47,7 +47,7 @@ fn prepare_image(input: DynamicImage, max_size: u32) -> (ArrayBase<OwnedRepr<f32
 }
 
 fn truncate(landmark: Array<f32, Ix2>) -> (f32, f32, f32) {
-    let [left_eye, right_eye, nose, left_mouth, right_mouth] = {
+    let [left_eye, right_eye, _nose, left_mouth, right_mouth] = {
         let mut arr = [[0.0f32; 2]; 5];
         let land_vec = landmark.into_raw_vec().clone();
         for i in 0..5 {
@@ -123,12 +123,12 @@ fn main() -> () {
     for face in &face_list {
         let face_pos = truncate(face.landmark.clone());
         println!("{:?}", face_pos);
-        draw_canvas = rotate(&mut draw_canvas, (face_pos.0, face_pos.1), -face_pos.2, Interpolation::Nearest, Rgb([0, 0, 0]));
+        draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), -face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
         draw_hollow_rect_mut(&mut draw_canvas, Rect::at(face.bbox[0] as i32, face.bbox[1] as i32).
             of_size(face.bbox[2] as u32 - face.bbox[0] as u32,
                     face.bbox[3] as u32 - face.bbox[1] as u32),
                              Rgb([0, 255, 244]));
-        draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), face_pos.2, Interpolation::Nearest, Rgb([0, 0, 0]));
+        draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
     }
     draw_canvas.save("test_rect.jpg").unwrap();
     return ();
