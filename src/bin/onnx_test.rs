@@ -1,12 +1,29 @@
-use image::DynamicImage;
-use ndarray::{Array, ArrayBase, IxDyn, OwnedRepr, s};
+use image::{DynamicImage, GenericImageView, Rgb};
+use ndarray::{Array, ArrayBase, Ix1, Ix2, IxDyn, OwnedRepr, s};
 use ort::execution_providers::{CPUExecutionProviderOptions, CUDAExecutionProviderOptions, TensorRTExecutionProviderOptions};
 use ort::ExecutionProvider;
 use ort::{Environment, GraphOptimizationLevel, SessionBuilder, Value};
-use std::fs;
+use std::{fmt, fs};
+use std::fmt::Formatter;
 use image::imageops::FilterType;
+use imageproc::geometric_transformations::{Interpolation, rotate};
+use imageproc::drawing::draw_hollow_rect_mut;
+use imageproc::rect::Rect;
 
+#[derive(Debug)]
+struct Face {
+    landmark: Array<f32, Ix2>,
+    bbox: Array<f32, Ix1>,
+    confidence: f32,
+}
 
+impl fmt::Display for Face {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}\n", self.landmark).unwrap();
+        write!(f, "{}\n", self.bbox).unwrap();
+        write!(f, "{}", self.confidence)
+    }
+}
 // 参考: https://github.com/AndreyGermanov/yolov8_onnx_rust/blob/5b28d2550d715f7dbed8ce31b5fdb8e000fa77f6/src/main.rs
 
 fn prepare_image(input: DynamicImage, max_size: u32) -> (ArrayBase<OwnedRepr<f32>, IxDyn>, f32) {
@@ -27,6 +44,25 @@ fn prepare_image(input: DynamicImage, max_size: u32) -> (ArrayBase<OwnedRepr<f32
         onnx_input[[0usize, 2, y as usize, x as usize]] = r;
     }
     (onnx_input, scale)
+}
+
+fn truncate(landmark: Array<f32, Ix2>) -> (f32, f32, f32) {
+    let [left_eye, right_eye, nose, left_mouth, right_mouth] = {
+        let mut arr = [[0.0f32; 2]; 5];
+        let land_vec = landmark.into_raw_vec().clone();
+        for i in 0..5 {
+            arr[i] = [land_vec[i * 2], land_vec[i * 2 + 1]];
+        }
+        arr
+    };
+
+    let center_x = [left_eye[0], right_eye[0], left_mouth[0], right_mouth[0]].iter().sum::<f32>() / 4.0;
+    let center_y = [left_eye[1], right_eye[1], left_mouth[1], right_mouth[1]].iter().sum::<f32>() / 4.0;
+    let eye_center = ((right_eye[0] + left_eye[0]) / 2.0,
+                      (right_eye[1] + left_eye[1]) / 2.0);
+    let mouth_center = ((right_mouth[0] + left_mouth[0]) / 2.0,
+                        (right_mouth[1] + left_mouth[1]) / 2.0);
+    return (center_x, center_y, (eye_center.0 - mouth_center.0).atan2(mouth_center.1 - eye_center.1));
 }
 
 fn main() -> () {
@@ -60,7 +96,6 @@ fn main() -> () {
     let image = image::open(image_path).unwrap();
 
     let (image_arr, scale) = prepare_image(image.clone(), 640).clone();
-    // println!("{}", image_arr);
 
     let image_layout = image_arr.as_standard_layout();
 
@@ -74,13 +109,27 @@ fn main() -> () {
         }),
         &_ => unreachable!(),
     };
-    // println!("{:?}", [loc.clone(), conf.clone(), land.clone()]);
 
+    let mut face_list = Vec::<Face>::new();
     for i in 0..loc.clone().shape()[0] {
-        println!("{:?}", loc.slice(s![i,..]).iter().map(|&x| { x * scale }).collect::<Vec<_>>());
-        println!("{}", conf.slice(s![i]));
-        println!("{:?}", Array::from_shape_vec((5, 2), land.slice(s![i,..]).iter().map(|&x| { x * scale }).collect()).unwrap());
+        face_list.push(Face {
+            landmark: Array::from_shape_vec((5, 2), land.slice(s![i,..]).iter().map(|&x| { x * scale }).collect()).unwrap(),
+            confidence: conf[i],
+            bbox: loc.slice(s![i,..]).iter().map(|&x| { x * scale }).collect::<Array<f32, Ix1>>(),
+        });
     }
-
+    println!("{:?}", face_list);
+    let mut draw_canvas = image.to_rgb8().clone();
+    for face in &face_list {
+        let face_pos = truncate(face.landmark.clone());
+        println!("{:?}", face_pos);
+        draw_canvas = rotate(&mut draw_canvas, (face_pos.0, face_pos.1), -face_pos.2, Interpolation::Nearest, Rgb([0, 0, 0]));
+        draw_hollow_rect_mut(&mut draw_canvas, Rect::at(face.bbox[0] as i32, face.bbox[1] as i32).
+            of_size(face.bbox[2] as u32 - face.bbox[0] as u32,
+                    face.bbox[3] as u32 - face.bbox[1] as u32),
+                             Rgb([0, 255, 244]));
+        draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), face_pos.2, Interpolation::Nearest, Rgb([0, 0, 0]));
+    }
+    draw_canvas.save("test_rect.jpg").unwrap();
     return ();
 }
