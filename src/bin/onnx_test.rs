@@ -9,6 +9,7 @@ use image::imageops::FilterType;
 use imageproc::geometric_transformations::{Interpolation, rotate};
 use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::rect::Rect;
+use include_bytes_zstd;
 
 #[derive(Debug)]
 struct Face {
@@ -89,9 +90,9 @@ fn main() -> () {
     let session = SessionBuilder::new(&environment).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level1).unwrap()
         .with_intra_threads(1).unwrap()
-        .with_model_from_file(
-            onnx_path
-        ).unwrap();
+        .with_model_from_memory(include_bytes!("C:\\Users\\tomokazu\\build\\retinaface\\retinaface_1280.onnx"))
+        // .with_model_from_file(onnx_path)
+        .unwrap();
 
     let image = image::open(image_path).unwrap();
 
@@ -120,9 +121,12 @@ fn main() -> () {
     }
     println!("{:?}", face_list);
     let mut draw_canvas = image.to_rgb8().clone();
+    let mut faces: Vec<_> = vec![];
     for face in &face_list {
         let face_pos = truncate(face.landmark.clone());
         println!("{:?}", face_pos);
+        faces.push(DynamicImage::from(rotate(&draw_canvas, (face_pos.0, face_pos.1), -face_pos.2, Interpolation::Bilinear,
+                                             Rgb([0, 0, 0]))).crop(face.bbox[0] as u32, face.bbox[1] as u32, face.bbox[2] as u32 - face.bbox[0] as u32, face.bbox[3] as u32 - face.bbox[1] as u32));
         draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), -face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
         draw_hollow_rect_mut(&mut draw_canvas, Rect::at(face.bbox[0] as i32, face.bbox[1] as i32).
             of_size(face.bbox[2] as u32 - face.bbox[0] as u32,
@@ -131,5 +135,6 @@ fn main() -> () {
         draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
     }
     draw_canvas.save("test_rect.jpg").unwrap();
+    // println!("{:?}", faces);
     return ();
 }
