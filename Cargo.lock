@@ -48,6 +48,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing-subscriber",
+ "wasm-bindgen",
 ]
 
 [[package]]

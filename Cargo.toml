@@ -19,3 +19,4 @@ rand = { version = "*", features = ["default"] }
 ndarray = { version = "*", features = ["default"] }
 imageproc = { version = "*", features = ["default"] }
 include-bytes-zstd = { version = "0.1.0" }
+wasm-bindgen = { version = "*" }

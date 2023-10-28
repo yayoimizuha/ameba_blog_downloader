@@ -81,15 +81,15 @@ fn truncate(landmark: Array<f32, Ix2>) -> (f32, f32, f32) {
 
 fn main() -> () {
     let image_path = r"manaka_test.jpg";
-    let onnx_path = r"C:\Users\tomokazu\build\retinaface\retinaface_1280.onnx";
-    match fs::metadata(onnx_path) {
-        Ok(_) => println!("RetinaFace File exist"),
-        Err(_) => eprintln!("RetinaFace File not exist"),
-    }
-    match fs::metadata(image_path) {
-        Ok(_) => println!("image File exist"),
-        Err(_) => eprintln!("image File not exist"),
-    }
+    // let onnx_path = r"C:\Users\tomokazu\build\retinaface\retinaface_1280.onnx";
+    // match fs::metadata(onnx_path) {
+    //     Ok(_) => println!("RetinaFace File exist"),
+    //     Err(_) => eprintln!("RetinaFace File not exist"),
+    // }
+    // match fs::metadata(image_path) {
+    //     Ok(_) => println!("image File exist"),
+    //     Err(_) => eprintln!("image File not exist"),
+    // }
 
     tracing_subscriber::fmt::init();
     let environment = Environment::builder()
@@ -150,7 +150,7 @@ fn main() -> () {
                              Rgb([0, 255, 244]));
         draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
     }
-    draw_canvas.save("test_rect.jpg").unwrap();
+    // draw_canvas.save("test_rect.jpg").unwrap();
     let mut face_arr = Array::<f32, _>::zeros((faces.len(), 3usize, 224usize, 224usize)).into_dyn();
     for i in 0..faces.len() {
         if faces[i].width() > 80 {
@@ -183,11 +183,13 @@ fn main() -> () {
         let mut row = i.softmax(Axis(0)).into_iter().enumerate().collect::<Vec<_>>();
         row.sort_by(|a, b| { (-a.1).partial_cmp(&-b.1).unwrap() });
         println!("\n");
-        &row[..5].iter().for_each(|x| {
-            println!("{}: {}%", NAME_LIST[x.0], &x.1 * 100f32);
-        });
+        for (order, confidence) in &row[..5] {
+            println!("{}: {}%", NAME_LIST[*order], confidence * 100f32);
+        }
     }
 
     // println!("{:?}", faces);
     return ();
 }
+
+
