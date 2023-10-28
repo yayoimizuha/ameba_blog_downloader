@@ -79,8 +79,8 @@ fn truncate(landmark: Array<f32, Ix2>) -> (f32, f32, f32) {
     return (center_x, center_y, (eye_center.0 - mouth_center.0).atan2(mouth_center.1 - eye_center.1));
 }
 
-fn main() -> () {
-    let image_path = r"manaka_test.jpg";
+fn infer(file_bytes: Vec<u8>) -> () {
+    // let image_path = r"manaka_test.jpg";
     // let onnx_path = r"C:\Users\tomokazu\build\retinaface\retinaface_1280.onnx";
     // match fs::metadata(onnx_path) {
     //     Ok(_) => println!("RetinaFace File exist"),
@@ -95,8 +95,8 @@ fn main() -> () {
     let environment = Environment::builder()
         .with_name("RetinaFace")
         .with_execution_providers([
-            ExecutionProvider::TensorRT(TensorRTExecutionProviderOptions::default()),
-            ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default()),
+            // ExecutionProvider::TensorRT(TensorRTExecutionProviderOptions::default()),
+            // ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default()),
             ExecutionProvider::CPU(CPUExecutionProviderOptions::default()),
         ]).build().unwrap().into_arc();
 
@@ -107,7 +107,8 @@ fn main() -> () {
         // .with_model_from_file(onnx_path)
         .unwrap();
 
-    let image = image::open(image_path).unwrap();
+    // let image = image::open(image_path).unwrap();
+    let image = image::load_from_memory(file_bytes.as_ref()).unwrap();
 
     let (image_arr, scale) = prepare_image(image.clone(), 640).clone();
 
@@ -164,8 +165,8 @@ fn main() -> () {
     let recognition_environment = Environment::builder()
         .with_name("RecognitionResNet")
         .with_execution_providers([
-            ExecutionProvider::TensorRT(TensorRTExecutionProviderOptions::default()),
-            ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default()),
+            // ExecutionProvider::TensorRT(TensorRTExecutionProviderOptions::default()),
+            // ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default()),
             ExecutionProvider::CPU(CPUExecutionProviderOptions::default()),
         ]).build().unwrap().into_arc();
 
@@ -193,3 +194,8 @@ fn main() -> () {
 }
 
 
+fn main() {
+    let image_path = "manaka_test.jpg";
+    let image_bytes = fs::read(image_path).unwrap();
+    println!("{:?}", infer(image_bytes));
+}
