@@ -1,6 +1,6 @@
 [package]
 name = "ameba_blog_downloader"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,6 +11,7 @@ reqwest = { version = "*", features = ["default"] }
 regex = { version = "*", features = ["default"] }
 futures = { version = "*", features = ["default"] }
 serde_json = { version = "*", features = ["default", "preserve_order"] }
+serde = { version = "*", features = ["default", "derive"] }
 ort = { version = "1.15.2", features = ["default"] }
 # tract-onnx = { version = "*", features = ["default"] }
 image = { version = "*", features = ["default", "jpeg", "png"] }
@@ -20,3 +21,4 @@ ndarray = { version = "*", features = ["default"] }
 imageproc = { version = "*", features = ["default"] }
 include-bytes-zstd = { version = "0.1.0" }
 wasm-bindgen = { version = "*" }
+wasm-pack = { version = "*" }
