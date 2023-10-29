@@ -13,7 +13,7 @@ edition = "2021"
 serde_json = { version = "*", features = ["default", "preserve_order"] }
 serde = { version = "*", features = ["default", "derive"] }
 ort = { version = "1.15.2", features = ["default"] }
-# tract-onnx = { version = "*", features = ["default"] }
+tract-onnx = { version = "*" }
 image = { version = "*", features = ["jpeg", "png"] }
 #tracing-subscriber = { version = "*", features = ["fmt", "env-filter"] }
 #rand = { version = "*", features = ["default"] }

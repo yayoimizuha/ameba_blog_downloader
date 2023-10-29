@@ -12,6 +12,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 // use serde_json::Value::String;
 // use imageproc::drawing::draw_hollow_rect_mut;
 // use imageproc::rect::Rect;
+use tract_onnx::prelude::*;
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone)]
 struct Predict<'lifetime> {
