@@ -208,6 +208,6 @@ fn main() {
     let image_path = "manaka_test.jpg";
     let image_bytes = fs::read(image_path).unwrap();
     let res = infer(image_bytes.as_slice());
-    // println!("{}", res);
-    println!("{}", serde_json::to_string_pretty(&serde_json::from_str::<Vec<Face>>(res.as_str()).unwrap()).unwrap());
+    println!("{}", res);
+    // println!("{}", serde_json::to_string_pretty(&serde_json::from_str::<Vec<Face>>(res.as_str()).unwrap()).unwrap());
 }
