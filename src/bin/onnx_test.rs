@@ -5,6 +5,7 @@ use ort::{ExecutionProvider, NdArrayExtensions};
 use ort::{Environment, GraphOptimizationLevel, SessionBuilder, Value};
 use std::{fmt, fs};
 use std::fmt::Formatter;
+use std::io::Cursor;
 use image::imageops::FilterType;
 use imageproc::geometric_transformations::{Interpolation, rotate};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 // use serde_json::Value::String;
 // use imageproc::drawing::draw_hollow_rect_mut;
 // use imageproc::rect::Rect;
+use tract_onnx::prelude::*;
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone)]
 struct Predict<'lifetime> {
@@ -95,6 +97,8 @@ fn truncate(landmark: [[f32; 2]; 5]) -> (f32, f32, f32) {
 
 #[wasm_bindgen]
 pub fn infer(file_bytes: &[u8]) -> String {
+    let onnx_path = "src/bin/retinaface_sim.onnx";
+    const MAX_SIZE: u32 = 640;
     // tracing_subscriber::fmt::init();
     let environment = Environment::builder()
         .with_name("RetinaFace")
@@ -111,10 +115,18 @@ pub fn infer(file_bytes: &[u8]) -> String {
         // .with_model_from_file(onnx_path)
         .unwrap();
 
+    let tract_model = tract_onnx::onnx()
+        .model_for_read(&mut Cursor::new(include_bytes!("retinaface.onnx"))).unwrap()
+        .with_input_names(["input"]).unwrap()
+        .with_output_names(["bbox", "confidence", "landmark"]).unwrap()
+        .with_input_fact(0, f32::fact(&[1, 3, MAX_SIZE as i32, 640]).into()).unwrap()
+        .into_optimized().unwrap()
+        .into_runnable().unwrap();
+
     // let image = image::open(image_path).unwrap();
     let image = image::load_from_memory(file_bytes.as_ref()).unwrap();
 
-    let (image_arr, scale) = prepare_image(image.clone(), 640).clone();
+    let (image_arr, scale) = prepare_image(image.clone(), MAX_SIZE).clone();
 
     let image_layout = image_arr.as_standard_layout();
 
@@ -128,6 +140,8 @@ pub fn infer(file_bytes: &[u8]) -> String {
         }),
         &_ => unreachable!(),
     };
+    let aa: Tensor = image_arr.into();
+    println!("{:?}", tract_model.run(tvec!(aa.into())).unwrap()[0].to_array_view::<f32>().unwrap());
 
     let mut face_list = Vec::<Face>::new();
     for i in 0..loc.clone().shape()[0] {
@@ -178,11 +192,12 @@ pub fn infer(file_bytes: &[u8]) -> String {
             ExecutionProvider::CPU(CPUExecutionProviderOptions::default()),
         ]).build().unwrap().into_arc();
 
+    let classifier_path = "src/bin/face_recognition_sim.onnx";
     let recognition_session = SessionBuilder::new(&recognition_environment).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level1).unwrap()
         .with_intra_threads(4).unwrap()
         .with_model_from_memory(include_bytes!(r"face_recognition_sim.onnx"))
-        // .with_model_from_file(onnx_path)
+        // .with_model_from_file(classifier_path)
         .unwrap();
 
     let recognition_layout = face_arr.as_standard_layout();
