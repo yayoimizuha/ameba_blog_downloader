@@ -60,12 +60,12 @@ fn prepare_image(input: DynamicImage, max_size: u32) -> (ArrayBase<OwnedRepr<f32
         Array::<f32, _>::zeros((1usize, 3usize, max_size as usize, max_size as usize)).into_dyn();
     for (x, y, pixel) in resized.into_rgb32f().enumerate_pixels() {
         let [mut r, mut g, mut b] = pixel.0;
-        b -= 0.485;
-        g -= 0.456;
-        r -= 0.406;
-        b /= 0.229;
-        g /= 0.224;
-        r /= 0.225;
+        // b -= 0.485;
+        // g -= 0.456;
+        // r -= 0.406;
+        // b /= 0.229;
+        // g /= 0.224;
+        // r /= 0.225;
         onnx_input[[0usize, 0, y as usize, x as usize]] = b;
         onnx_input[[0usize, 1, y as usize, x as usize]] = g;
         onnx_input[[0usize, 2, y as usize, x as usize]] = r;

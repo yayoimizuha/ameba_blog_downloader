@@ -6,10 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#tokio = { version = "*", features = ["full"] }
-#reqwest = { version = "*", features = ["default"] }
-#regex = { version = "*", features = ["default"] }
-#futures = { version = "*", features = ["default"] }
+tokio = { version = "*", features = ["full"] }
+reqwest = { version = "*", features = ["default"] }
+regex = { version = "*", features = ["default"] }
+futures = { version = "*", features = ["default"] }
 serde_json = { version = "*", features = ["default", "preserve_order"] }
 serde = { version = "*", features = ["default", "derive"] }
 ort = { version = "1.15.2", features = ["default"] }
