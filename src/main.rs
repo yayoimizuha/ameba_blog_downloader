@@ -1,8 +1,11 @@
 use std::fs::File;
 use std::io::Write;
 use std::process::exit;
+use std::str::FromStr;
 use std::sync::Arc;
+use chrono::{DateTime, Utc};
 use futures::future;
+use html5ever::tree_builder::TreeSink;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::Value;
@@ -19,27 +22,49 @@ use scraper::{Html, Selector};
 //     "miyazaki-yuka-blog", "tsugunaga-momoko-blog", "tokunaga-chinami-blog", "c-ute-official",
 //     "tanakareina-blog", ];
 
+const NAMES: &[&str] = &["airisuzuki-officialblog"];
 
 async fn async_wait(t: u64) { time::sleep(time::Duration::from_millis(t)).await }
 
-
-fn html_to_text(html: Html) -> String {
-    // println!("{:?}", html.html());
-    let all_text: Selector = Selector::parse("img.PhotoSwipeImage").unwrap();
-    // let texts = html.select(&all_text).next().unwrap().text().collect::<Vec<_>>();
-    let mut tmp = html.select(&all_text);
-    // println!("{:?}", tmp.map(|x| x.html()).collect::<Vec<_>>());
-    println!("{:?}", tmp.next().unwrap().html());
-    // texts.join("\n")
-    "".to_string()
-}
-
+#[derive(Clone, Debug)]
 struct PageData {
     blog_page: String,
     comment_api: String,
 }
 
-const NAMES: &[&str] = &["miyazaki-yuka-blog"];
+#[derive(Clone, Debug)]
+struct ImageData {
+    page_data: PageData,
+    filename: String,
+    url: String,
+    date: chrono::DateTime<Utc>,
+}
+
+
+fn html_to_text(_html: Value, json: Value, page_data: PageData) -> Vec<String> {
+    let mut html = Html::parse_document(_html.as_str().unwrap());
+    let last_edit_date = DateTime::<Utc>::from_str(json["last_edit_datetime"].as_str().unwrap()).unwrap();
+    // println!("{:?}", html.html());
+    let image: Selector = Selector::parse("img[class=PhotoSwipeImage]").unwrap();
+    // let emoji: Selector = Selector::parse("img.PhotoSwipeImage[data-src]").unwrap();
+    // let texts = html.select(&all_text).next().unwrap().text().collect::<Vec<_>>();
+    let emoji_selector = Selector::parse("img.emoji").unwrap();
+    let emojis = html.select(&emoji_selector).map(|x|x.id()).collect::<Vec<_>>();
+    for emoji in emojis {
+        html.remove_from_parent(&emoji);
+    }
+    let mut tmp = html.select(&image);
+    // println!("{:?}", tmp.map(|x| x.html()).collect::<Vec<_>>());
+    // println!("{:?}", tmp);
+    tmp.map(|x| {
+        // println!("{}", x.html().as_str());
+        x.html()
+    }).collect::<Vec<_>>()
+    // tmp.next().unwrap().html()
+    // texts.join("\n")
+    // "".to_string()
+}
+
 
 async fn get_page_count(client: Client, name: &str, page_count: Regex) -> u64 {
     let mut page_nums: Option<u64> = None;
@@ -94,8 +119,8 @@ async fn get_page_count(client: Client, name: &str, page_count: Regex) -> u64 {
     //page_count
 }
 
-async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<String> {
-    let mut page_urls: Option<Vec<String>> = None;
+async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<PageData> {
+    let mut page_urls: Option<Vec<PageData>> = None;
     let permit = semaphore.acquire().await.unwrap();
     while page_urls.is_none() {
         match client.get(&format!("https://ameblo.jp/{blog_name}/entrylist-{page}.html"))
@@ -119,7 +144,13 @@ async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Re
                                         match page_urls.as_mut() {
                                             None => unreachable!(),
                                             Some(list) => {
-                                                list.push(article_url)
+                                                let page_data = PageData {
+                                                    blog_page: article_url.clone(),
+                                                    comment_api: ["https://ameblo.jp/_api/blogComments".to_string(), format!("amebaId={blog_name}"),
+                                                        format!("blogId={}", x["blog_id"]), format!("entryId={}", x["entry_id"]),
+                                                        "excludeReplies=false".to_string(), "limit=1".to_string(), "offset=0".to_string()].join(";"),
+                                                };
+                                                list.push(page_data)
                                             }
                                         }
                                     }
@@ -145,15 +176,15 @@ async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Re
         }
     }
     drop(permit);
-    page_urls.unwrap().clone()
+    page_urls.unwrap()
 }
 
 
-async fn parse_article_page(client: Client, page_url: String, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<String> {
+async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<String> {
     let mut page_urls: Option<Vec<String>> = None;
     let permit = semaphore.acquire().await.unwrap();
     while page_urls.is_none() {
-        match client.get(page_url.as_str())
+        match client.get(page_data.blog_page.as_str())
             .send().await {
             Ok(resp) => {
                 let resp_text = resp.text().await.unwrap().as_str().to_string();
@@ -170,12 +201,13 @@ async fn parse_article_page(client: Client, page_url: String, matcher: Regex, se
                                 let mut text_to_file = File::create("test.txt").unwrap();
                                 html_to_file.write_all(article_html.as_str().unwrap().as_bytes()).unwrap();
                                 html_to_file.flush().unwrap();
-                                let html = Html::parse_fragment(article_html.as_str().unwrap());
-                                let content_text = html_to_text(html);
-                                text_to_file.write_all(content_text.as_bytes()).unwrap();
+                                // let html = Html::parse_fragment(article_html.as_str().unwrap());
+                                let content_text = html_to_text(article_html, article_val.get(0).unwrap().clone(), page_data.clone());
+                                text_to_file.write_all(content_text.join("\n").as_ref()).unwrap();
                                 text_to_file.flush().unwrap();
+                                page_urls = Some(content_text.clone());
                                 println!("{:?}", content_text);
-                                exit(0);
+                                // exit(0);
                             }
                             Err(err) => {
                                 eprintln!("Failed to parse json string: {}", err);
@@ -203,7 +235,7 @@ async fn parse_article_page(client: Client, page_url: String, matcher: Regex, se
 async fn main() {
     // console_subscriber::init();
     let client = Client::new();
-    let semaphore = Arc::new(Semaphore::new(300));
+    let semaphore = Arc::new(Semaphore::new(100));
     let mut tasks = Vec::new();
     let page_count: Regex = Regex::new(r"<script>window.INIT_DATA=(.*?)};").unwrap();
 
@@ -236,7 +268,8 @@ async fn main() {
         }
     }
     let mut all_articles = vec![];
-    for item in future::join_all(tasks).await.iter().map(|x| { x.as_ref().unwrap().clone() }).collect::<Vec<_>>() {
+    let binding = future::join_all(tasks).await;
+    for item in binding.iter().map(|x| { x.as_ref().unwrap() }).collect::<Vec<_>>() {
         all_articles.extend(item);
         // exit(-1);
     }
@@ -248,7 +281,7 @@ async fn main() {
         );
         tasks.push(task);
 
-        println!("{}", url);
+        println!("{:?}", url);
     }
     future::join_all(tasks).await;
 }
