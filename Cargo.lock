@@ -71,8 +71,10 @@ dependencies = [
 name = "ameba_blog_downloader"
 version = "1.1.0"
 dependencies = [
+ "chrono",
  "console-subscriber",
  "futures",
+ "html5ever",
  "image",
  "imageproc",
  "ndarray",
@@ -464,6 +466,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-targets 0.48.5",
 ]

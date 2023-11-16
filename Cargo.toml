@@ -26,3 +26,5 @@ console-subscriber = { version = "*" }
 #openssl-sys = { version = "0.9.93", features = ["vendored"] }
 web-sys = { version = "*", features = ["Crypto", "console"], default-features = true }
 scraper = { version = "*" }
+chrono = { version = "*", features = ["default", "serde"] }
+html5ever = { version = "*" }
