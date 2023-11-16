@@ -25,4 +25,4 @@ wasm-pack = { version = "*" }
 console-subscriber = { version = "*" }
 #openssl-sys = { version = "0.9.93", features = ["vendored"] }
 web-sys = { version = "*", features = ["Crypto", "console"], default-features = true }
-
+scraper = { version = "*" }
