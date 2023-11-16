@@ -104,7 +104,7 @@ pub fn infer(file_bytes: &[u8]) -> String {
         .with_name("RetinaFace")
         .with_execution_providers([
             // ExecutionProvider::TensorRT(TensorRTExecutionProviderOptions::default()),
-            // ExecutionProvider::CUDA(CUDAExecutionProviderOptions::default()),
+            // ExecutionProvider::CUDA(CUDAExecutionProvhiderOptions::default()),
             ExecutionProvider::CPU(CPUExecutionProviderOptions::default()),
         ]).build().unwrap().into_arc();
 

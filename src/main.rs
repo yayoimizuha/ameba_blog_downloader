@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::Write;
 use std::process::exit;
 use std::sync::Arc;
 use futures::future;
@@ -6,6 +8,7 @@ use reqwest::Client;
 use serde_json::Value;
 use tokio::{task, time};
 use tokio::sync::Semaphore;
+use scraper::{Html, Selector};
 
 // const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
 //     "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
@@ -18,6 +21,18 @@ use tokio::sync::Semaphore;
 
 
 async fn async_wait(t: u64) { time::sleep(time::Duration::from_millis(t)).await }
+
+
+fn html_to_text(html: Html) -> String {
+    // println!("{:?}", html.html());
+    let all_text: Selector = Selector::parse("img.PhotoSwipeImage").unwrap();
+    // let texts = html.select(&all_text).next().unwrap().text().collect::<Vec<_>>();
+    let mut tmp = html.select(&all_text);
+    // println!("{:?}", tmp.map(|x| x.html()).collect::<Vec<_>>());
+    println!("{:?}", tmp.next().unwrap().html());
+    // texts.join("\n")
+    "".to_string()
+}
 
 struct PageData {
     blog_page: String,
@@ -150,8 +165,17 @@ async fn parse_article_page(client: Client, page_url: String, matcher: Regex, se
                         match serde_json::from_str::<Value>(&json_str) {
                             Ok(json) => {
                                 let article_val = json["entryState"]["entryMap"].as_object().unwrap().values().cloned().collect::<Vec<_>>();
-                                println!("{}", article_val.get(0).unwrap()["entry_text"]);
-                                exit(-1);
+                                let article_html = article_val.get(0).unwrap()["entry_text"].clone();
+                                let mut html_to_file = File::create("test.html").unwrap();
+                                let mut text_to_file = File::create("test.txt").unwrap();
+                                html_to_file.write_all(article_html.as_str().unwrap().as_bytes()).unwrap();
+                                html_to_file.flush().unwrap();
+                                let html = Html::parse_fragment(article_html.as_str().unwrap());
+                                let content_text = html_to_text(html);
+                                text_to_file.write_all(content_text.as_bytes()).unwrap();
+                                text_to_file.flush().unwrap();
+                                println!("{:?}", content_text);
+                                exit(0);
                             }
                             Err(err) => {
                                 eprintln!("Failed to parse json string: {}", err);
