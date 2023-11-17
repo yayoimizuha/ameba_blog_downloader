@@ -42,6 +42,7 @@ struct ImageData {
 
 
 fn html_to_text(_html: Value, json: Value, page_data: PageData) -> Vec<String> {
+    println!("{}", page_data.blog_page);
     let mut html = Html::parse_document(_html.as_str().unwrap());
     let last_edit_date = DateTime::<Utc>::from_str(json["last_edit_datetime"].as_str().unwrap()).unwrap();
     // println!("{:?}", html.html());
@@ -49,9 +50,10 @@ fn html_to_text(_html: Value, json: Value, page_data: PageData) -> Vec<String> {
     // let emoji: Selector = Selector::parse("img.PhotoSwipeImage[data-src]").unwrap();
     // let texts = html.select(&all_text).next().unwrap().text().collect::<Vec<_>>();
     let emoji_selector = Selector::parse("img.emoji").unwrap();
-    let emojis = html.select(&emoji_selector).map(|x|x.id()).collect::<Vec<_>>();
-    for emoji in emojis {
-        html.remove_from_parent(&emoji);
+    let mut emojis = html.select(&emoji_selector).collect::<Vec<_>>();
+    for emoji in &emojis {
+        println!("{:?}", emoji.html());
+        html.remove_from_parent(&emoji.id());
     }
     let mut tmp = html.select(&image);
     // println!("{:?}", tmp.map(|x| x.html()).collect::<Vec<_>>());
