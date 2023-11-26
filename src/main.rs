@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::Write;
+use std::ops::Deref;
 use std::process::exit;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use reqwest::Client;
 use serde_json::Value;
 use tokio::{task, time};
 use tokio::sync::Semaphore;
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 
 // const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
 //     "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
@@ -30,6 +31,7 @@ async fn async_wait(t: u64) { time::sleep(time::Duration::from_millis(t)).await 
 struct PageData {
     blog_page: String,
     comment_api: String,
+    // theme: String,
 }
 
 #[derive(Clone, Debug)]
@@ -41,30 +43,49 @@ struct ImageData {
 }
 
 
-fn html_to_text(_html: Value, json: Value, page_data: PageData) -> Vec<String> {
+fn html_to_text(_html: Value, json: Value, page_data: PageData) -> (Vec<ImageData>, String) {
+    let mut return_val = vec![];
+    if page_data.blog_page != "https://ameblo.jp/airisuzuki-officialblog/entry-12340462803.html" {
+        return (vec![], "".to_string());
+    }
     println!("{}", page_data.blog_page);
-    let mut html = Html::parse_document(_html.as_str().unwrap());
+    let mut html = Html::parse_document(&*_html.as_str().unwrap().replace("<br>", "\n"));
     let last_edit_date = DateTime::<Utc>::from_str(json["last_edit_datetime"].as_str().unwrap()).unwrap();
     // println!("{:?}", html.html());
-    let image: Selector = Selector::parse("img[class=PhotoSwipeImage]").unwrap();
     // let emoji: Selector = Selector::parse("img.PhotoSwipeImage[data-src]").unwrap();
-    // let texts = html.select(&all_text).next().unwrap().text().collect::<Vec<_>>();
+
     let emoji_selector = Selector::parse("img.emoji").unwrap();
-    let mut emojis = html.select(&emoji_selector).collect::<Vec<_>>();
+    let emojis: Vec<_> = html.select(&emoji_selector).map(|x| x.id()).collect();
     for emoji in &emojis {
-        println!("{:?}", emoji.html());
-        html.remove_from_parent(&emoji.id());
+        html.remove_from_parent(&emoji);
     }
-    let mut tmp = html.select(&image);
-    // println!("{:?}", tmp.map(|x| x.html()).collect::<Vec<_>>());
-    // println!("{:?}", tmp);
-    tmp.map(|x| {
-        // println!("{}", x.html().as_str());
-        x.html()
-    }).collect::<Vec<_>>()
-    // tmp.next().unwrap().html()
-    // texts.join("\n")
-    // "".to_string()
+
+    let noscript: Selector = Selector::parse("noscript").unwrap();
+    let noscripts: Vec<_> = html.select(&noscript).map(|x| x.id()).collect();
+    for noscript in noscripts {
+        html.remove_from_parent(&noscript);
+    }
+
+
+    let image_selector = Selector::parse("img[class=PhotoSwipeImage]").unwrap();
+    let images: Vec<_> = html.select(&image_selector).map(|x| x.clone()).collect();
+    // println!("{}", html.html());
+
+    for image in images {
+        println!("{}", image.value().attr("data-src").unwrap());
+        return_val.push(ImageData {
+            page_data: page_data.clone(),
+            filename: "".to_string(),
+            url: image.value().attr("data-src").unwrap().to_string(),
+            date: last_edit_date,
+        })
+    }
+    // for text in texts {
+    //     println!("{}", text)
+    // }
+    let as_text = Selector::parse("*").unwrap();
+    let texts = html.select(&as_text).next().unwrap().text().map(|x| String::from_str(x).unwrap()).collect::<Vec<_>>();
+    (return_val, texts.join("\n"))
 }
 
 
@@ -181,9 +202,36 @@ async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Re
     page_urls.unwrap()
 }
 
+fn theme_curator(theme: String, blog_id: String) -> String {
+    let theme_val;
+    match blog_id.as_str() {
+        "" => theme_val = "null".to_owned(),
+        "risa-ogata" => theme_val = "小片リサ".to_owned(),
+        "shimizu--saki" => theme_val = "清水佐紀".to_owned(),
+        "kumai-yurina-blog" => theme_val = "熊井友理奈".to_owned(),
+        "sudou-maasa-blog" => theme_val = "須藤茉麻".to_owned(),
+        "sugaya-risako-blog" => theme_val = "菅谷梨沙子".to_owned(),
+        "miyamotokarin-official" => theme_val = "宮本佳林".to_owned(),
+        "sayumimichishige-blog" => theme_val = "道重さゆみ".to_owned(),
+        "kudo--haruka" => theme_val = "工藤遥".to_owned(),
+        "airisuzuki-officialblog" => theme_val = "鈴木愛理".to_owned(),
+        "angerme-ayakawada" => theme_val = "和田彩花".to_owned(),
+        "miyazaki-yuka-blog" => theme_val = "宮崎由加".to_owned(),
+        "tsugunaga-momoko-blog" => theme_val = "嗣永桃子".to_owned(),
+        "natsuyaki-miyabi-blog" => theme_val = "夏焼雅".to_owned(),
+        "tokunaga-chinami-blog" => theme_val = "徳永千奈美".to_owned(),
+        "tanakareina-blog" => theme_val = "田中れいな".to_owned(),
+        _ => theme_val = theme
+    }
+    if theme_val == "梁川 奈々美" {
+        "梁川奈々美".to_owned()
+    } else {
+        theme_val
+    }
+}
 
-async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<String> {
-    let mut page_urls: Option<Vec<String>> = None;
+async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<ImageData> {
+    let mut page_urls: Option<Vec<ImageData>> = None;
     let permit = semaphore.acquire().await.unwrap();
     while page_urls.is_none() {
         match client.get(page_data.blog_page.as_str())
@@ -198,17 +246,12 @@ async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex,
                         match serde_json::from_str::<Value>(&json_str) {
                             Ok(json) => {
                                 let article_val = json["entryState"]["entryMap"].as_object().unwrap().values().cloned().collect::<Vec<_>>();
+                                // let theme_name
                                 let article_html = article_val.get(0).unwrap()["entry_text"].clone();
-                                let mut html_to_file = File::create("test.html").unwrap();
-                                let mut text_to_file = File::create("test.txt").unwrap();
-                                html_to_file.write_all(article_html.as_str().unwrap().as_bytes()).unwrap();
-                                html_to_file.flush().unwrap();
                                 // let html = Html::parse_fragment(article_html.as_str().unwrap());
                                 let content_text = html_to_text(article_html, article_val.get(0).unwrap().clone(), page_data.clone());
-                                text_to_file.write_all(content_text.join("\n").as_ref()).unwrap();
-                                text_to_file.flush().unwrap();
-                                page_urls = Some(content_text.clone());
-                                println!("{:?}", content_text);
+                                page_urls = Some(content_text.0.clone());
+                                // println!("{:?}", content_text);
                                 // exit(0);
                             }
                             Err(err) => {
@@ -283,7 +326,7 @@ async fn main() {
         );
         tasks.push(task);
 
-        println!("{:?}", url);
+        // println!("{:?}", url);
     }
     future::join_all(tasks).await;
 }

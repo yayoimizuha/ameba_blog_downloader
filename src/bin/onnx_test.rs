@@ -116,11 +116,11 @@ pub fn infer(file_bytes: &[u8]) -> String {
         .unwrap();
 
     let tract_model = tract_onnx::onnx()
-        .model_for_read(&mut Cursor::new(include_bytes!("retinaface.onnx"))).unwrap()
+        .model_for_read(&mut Cursor::new(include_bytes!("retinaface_sim.onnx"))).unwrap()
         .with_input_names(["input"]).unwrap()
         .with_output_names(["bbox", "confidence", "landmark"]).unwrap()
         .with_input_fact(0, f32::fact(&[1, 3, MAX_SIZE as i32, 640]).into()).unwrap()
-        .into_optimized().unwrap()
+        // .into_optimized().unwrap()
         .into_runnable().unwrap();
 
     // let image = image::open(image_path).unwrap();
@@ -141,7 +141,9 @@ pub fn infer(file_bytes: &[u8]) -> String {
         &_ => unreachable!(),
     };
     let aa: Tensor = image_arr.into();
+    println!("start");
     println!("{:?}", tract_model.run(tvec!(aa.into())).unwrap()[0].to_array_view::<f32>().unwrap());
+    println!("end");
 
     let mut face_list = Vec::<Face>::new();
     for i in 0..loc.clone().shape()[0] {
