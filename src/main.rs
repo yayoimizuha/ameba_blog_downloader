@@ -1,16 +1,17 @@
-use std::arch::is_aarch64_feature_detected;
+use std::fs::create_dir;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use chrono::{DateTime, FixedOffset, Utc};
 use futures::future;
 use html5ever::tree_builder::TreeSink;
 use regex::Regex;
-use reqwest::{Client, Error, RequestBuilder, Response};
+use reqwest::Client;
 use serde_json::Value;
-use tokio::{task, time};
+use tokio::{task, time, spawn};
 use tokio::fs as async_fs;
 use tokio::sync::Semaphore;
-use scraper::{ElementRef, Html, Selector};
+use scraper::{Html, Selector};
 use tokio::io::AsyncWriteExt;
 
 // const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
@@ -40,6 +41,7 @@ struct PageData {
 struct ImageData {
     page_data: PageData,
     filename: String,
+    theme: String,
     url: String,
     date: DateTime<Utc>,
 }
@@ -79,8 +81,9 @@ fn html_to_text(_html: Value, json: Value, page_data: PageData) -> (Vec<ImageDat
         return_val.push(ImageData {
             page_data: page_data.clone(),
             filename: format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_account, page_data.article_id, order + 1),
-            url: image.value().attr("data-src").unwrap().to_string(),
+            url: image.value().attr("data-src").unwrap().to_string().replace("?caw=800", "?caw=1125"),
             date: last_edit_date,
+            theme: page_data.theme.clone(),
         })
     }
     // for text in texts {
@@ -109,7 +112,7 @@ async fn get_page_count(client: Client, name: &str, page_count: Regex) -> u64 {
                         let mut json_str = matched_text.as_str().to_string();
                         json_str.pop();
                         json_str = json_str.replacen("<script>window.INIT_DATA=", "", 1);
-                        match serde_json::from_str::<serde_json::Value>(&json_str) {
+                        match serde_json::from_str::<Value>(&json_str) {
                             Ok(json) => {
                                 let _ = json["entryState"]["blogPageMap"]
                                     .as_object()
@@ -240,7 +243,7 @@ fn theme_curator(theme: String, blog_id: String) -> String {
 
 async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<ImageData> {
     let mut page_urls: Option<Vec<ImageData>> = None;
-    let permit = semaphore.acquire().await.unwrap();
+    println!("start: {}", page_data.blog_page);
     while page_urls.is_none() {
         match client.get(page_data.blog_page.as_str())
             .send().await {
@@ -280,12 +283,14 @@ async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex,
             }
         }
     }
-    drop(permit);
+    // drop(permit);
+    println!("end: {}", page_data.blog_page);
+
     page_urls.unwrap().clone()
 }
 
 async fn download_file(client: Client, url: String, filename: String, semaphore: Arc<Semaphore>) {
-    let permit = semaphore.acquire().await.unwrap();
+    let _permit = semaphore.acquire().await.unwrap();
     match client.get(url).send().await {
         Ok(resp) => {
             let mut file = async_fs::File::create(filename).await.unwrap();
@@ -305,7 +310,7 @@ async fn main() {
     let page_count: Regex = Regex::new(r"<script>window.INIT_DATA=(.*?)};").unwrap();
 
     for name in NAMES {
-        let task = task::spawn(get_page_count(
+        let task = spawn(get_page_count(
             client.clone(),
             name,
             page_count.clone(),
@@ -318,14 +323,14 @@ async fn main() {
         .iter()
         .map(|x| x.as_ref().unwrap().clone())
         .collect();
-    for &i in &list_page_count {
-        println!("{}", i);
+    for (order, &i) in (&list_page_count).iter().enumerate() {
+        println!("{}: {}", NAMES[order], i);
     }
     let mut tasks = vec![];
     for i in 0..NAMES.len() {
         for j in 1..=list_page_count[i] {
             // println!("https://ameblo.jp/{}/entrylist-{}.html", NAMES[i], j);
-            let task = tokio::spawn(
+            let task = spawn(
                 parse_list_page(client.clone(), NAMES[i],
                                 j, page_count.clone(), semaphore.clone())
             );
@@ -340,9 +345,14 @@ async fn main() {
     }
     println!("{}", all_articles.len());
     let mut tasks = vec![];
+    let semaphore = Arc::new(Semaphore::new(1));
     for url in all_articles {
-        let task = tokio::spawn(
-            parse_article_page(client.clone(), url.clone(), page_count.clone(), semaphore.clone())
+        let limit = semaphore.clone();
+        let task = spawn({
+            let permit = limit.acquire().await.unwrap();
+            let ret = parse_article_page(client.clone(), url.clone(), page_count.clone(), semaphore.clone());
+            ret
+        }
         );
         tasks.push(task);
 
@@ -351,13 +361,17 @@ async fn main() {
     let mut tasks_dl = vec![];
     future::join_all(tasks).await.iter().for_each(|x| {
         x.as_ref().unwrap().iter().for_each(|x| {
-            let filename = x.filename.clone();
+            // let filename = x.filename.clone();
             let url = x.url.clone();
-            let task = tokio::spawn(
-                download_file(client.clone(), url, filename, semaphore.clone())
+            if !Path::is_dir(Path::new(".").join("images").join(&x.theme).as_path()) {
+                create_dir(Path::new(".").join("images").join(&x.theme).as_path()).unwrap();
+            }
+            let file_path = Path::new(".").join("images").join(&x.theme).join(&x.filename);
+            let task = spawn(
+                download_file(client.clone(), url, file_path.to_str().unwrap().to_string(), semaphore.clone())
             );
             tasks_dl.push(task);
-            println!("{:?}", x);
+            println!("{} {} {} ", x.url, x.filename, x.date);
         })
     });
     future::join_all(tasks_dl).await;
