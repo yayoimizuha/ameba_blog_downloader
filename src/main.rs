@@ -1,18 +1,17 @@
-use std::fs::File;
-use std::io::Write;
-use std::ops::Deref;
-use std::process::exit;
+use std::arch::is_aarch64_feature_detected;
 use std::str::FromStr;
 use std::sync::Arc;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use futures::future;
 use html5ever::tree_builder::TreeSink;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{Client, Error, RequestBuilder, Response};
 use serde_json::Value;
 use tokio::{task, time};
+use tokio::fs as async_fs;
 use tokio::sync::Semaphore;
 use scraper::{ElementRef, Html, Selector};
+use tokio::io::AsyncWriteExt;
 
 // const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
 //     "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
@@ -31,7 +30,10 @@ async fn async_wait(t: u64) { time::sleep(time::Duration::from_millis(t)).await 
 struct PageData {
     blog_page: String,
     comment_api: String,
-    // theme: String,
+    last_edit_datetime: DateTime<FixedOffset>,
+    theme: String,
+    blog_account: String,
+    article_id: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -39,16 +41,17 @@ struct ImageData {
     page_data: PageData,
     filename: String,
     url: String,
-    date: chrono::DateTime<Utc>,
+    date: DateTime<Utc>,
 }
 
 
 fn html_to_text(_html: Value, json: Value, page_data: PageData) -> (Vec<ImageData>, String) {
+    // println!("{:?}", page_data);
     let mut return_val = vec![];
-    if page_data.blog_page != "https://ameblo.jp/airisuzuki-officialblog/entry-12340462803.html" {
+    if page_data.blog_page == "https://ameblo.jp/airisuzuki-officialblog/entry-12340462803.html" {
         return (vec![], "".to_string());
     }
-    println!("{}", page_data.blog_page);
+    // println!("{}", page_data.blog_page);
     let mut html = Html::parse_document(&*_html.as_str().unwrap().replace("<br>", "\n"));
     let last_edit_date = DateTime::<Utc>::from_str(json["last_edit_datetime"].as_str().unwrap()).unwrap();
     // println!("{:?}", html.html());
@@ -71,11 +74,11 @@ fn html_to_text(_html: Value, json: Value, page_data: PageData) -> (Vec<ImageDat
     let images: Vec<_> = html.select(&image_selector).map(|x| x.clone()).collect();
     // println!("{}", html.html());
 
-    for image in images {
-        println!("{}", image.value().attr("data-src").unwrap());
+    for (order, image) in images.iter().enumerate() {
+        // println!("{}", image.value().attr("data-src").unwrap());
         return_val.push(ImageData {
             page_data: page_data.clone(),
-            filename: "".to_string(),
+            filename: format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_account, page_data.article_id, order + 1),
             url: image.value().attr("data-src").unwrap().to_string(),
             date: last_edit_date,
         })
@@ -172,6 +175,10 @@ async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Re
                                                     comment_api: ["https://ameblo.jp/_api/blogComments".to_string(), format!("amebaId={blog_name}"),
                                                         format!("blogId={}", x["blog_id"]), format!("entryId={}", x["entry_id"]),
                                                         "excludeReplies=false".to_string(), "limit=1".to_string(), "offset=0".to_string()].join(";"),
+                                                    last_edit_datetime: DateTime::parse_from_rfc3339(x["last_edit_datetime"].as_str().unwrap()).unwrap(),
+                                                    theme: theme_curator(x["theme_name"].as_str().unwrap().to_string(), blog_name.to_string()),
+                                                    blog_account: blog_name.to_string(),
+                                                    article_id: x["entry_id"].as_u64().unwrap(),
                                                 };
                                                 list.push(page_data)
                                             }
@@ -205,7 +212,7 @@ async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Re
 fn theme_curator(theme: String, blog_id: String) -> String {
     let theme_val;
     match blog_id.as_str() {
-        "" => theme_val = "null".to_owned(),
+        // "" => theme_val = "null".to_owned(),
         "risa-ogata" => theme_val = "小片リサ".to_owned(),
         "shimizu--saki" => theme_val = "清水佐紀".to_owned(),
         "kumai-yurina-blog" => theme_val = "熊井友理奈".to_owned(),
@@ -221,6 +228,7 @@ fn theme_curator(theme: String, blog_id: String) -> String {
         "natsuyaki-miyabi-blog" => theme_val = "夏焼雅".to_owned(),
         "tokunaga-chinami-blog" => theme_val = "徳永千奈美".to_owned(),
         "tanakareina-blog" => theme_val = "田中れいな".to_owned(),
+        "ozeki-mai-official" => theme_val = "小関舞".to_owned(),
         _ => theme_val = theme
     }
     if theme_val == "梁川 奈々美" {
@@ -276,6 +284,18 @@ async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex,
     page_urls.unwrap().clone()
 }
 
+async fn download_file(client: Client, url: String, filename: String, semaphore: Arc<Semaphore>) {
+    let permit = semaphore.acquire().await.unwrap();
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let mut file = async_fs::File::create(filename).await.unwrap();
+            file.write_all(resp.bytes().await.unwrap().as_ref()).await.unwrap();
+            file.flush().await.unwrap();
+        }
+        Err(err) => { eprintln!("{}", err) }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // console_subscriber::init();
@@ -328,5 +348,17 @@ async fn main() {
 
         // println!("{:?}", url);
     }
-    future::join_all(tasks).await;
+    let mut tasks_dl = vec![];
+    future::join_all(tasks).await.iter().for_each(|x| {
+        x.as_ref().unwrap().iter().for_each(|x| {
+            let filename = x.filename.clone();
+            let url = x.url.clone();
+            let task = tokio::spawn(
+                download_file(client.clone(), url, filename, semaphore.clone())
+            );
+            tasks_dl.push(task);
+            println!("{:?}", x);
+        })
+    });
+    future::join_all(tasks_dl).await;
 }
