@@ -28,4 +28,5 @@ web-sys = { version = "*", features = ["Crypto", "console"], default-features = 
 scraper = { version = "*" }
 chrono = { version = "*", features = ["default", "serde"] }
 html5ever = { version = "*" }
-kdam = {version = "*"}
+kdam = { version = "*" }
+filetime = { version = "*" }

@@ -2,17 +2,20 @@ use std::fs::create_dir;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::SystemTime;
 use chrono::{DateTime, FixedOffset, Utc};
 use futures::future;
 use html5ever::tree_builder::TreeSink;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::Value;
-use tokio::{task, time, spawn};
+use tokio::{time, spawn};
 use tokio::fs as async_fs;
 use tokio::sync::Semaphore;
 use scraper::{Html, Selector};
 use tokio::io::AsyncWriteExt;
+use filetime::{FileTime, set_file_times};
+// use kdam::{Bar, BarExt};
 
 // const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
 //     "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
@@ -23,6 +26,8 @@ use tokio::io::AsyncWriteExt;
 //     "miyazaki-yuka-blog", "tsugunaga-momoko-blog", "tokunaga-chinami-blog", "c-ute-official",
 //     "tanakareina-blog", ];
 
+
+
 const NAMES: &[&str] = &["airisuzuki-officialblog"];
 
 async fn async_wait(t: u64) { time::sleep(time::Duration::from_millis(t)).await }
@@ -30,6 +35,7 @@ async fn async_wait(t: u64) { time::sleep(time::Duration::from_millis(t)).await 
 #[derive(Clone, Debug)]
 struct PageData {
     blog_page: String,
+    #[allow(dead_code)]
     comment_api: String,
     last_edit_datetime: DateTime<FixedOffset>,
     theme: String,
@@ -50,9 +56,9 @@ struct ImageData {
 fn html_to_text(_html: Value, json: Value, page_data: PageData) -> (Vec<ImageData>, String) {
     // println!("{:?}", page_data);
     let mut return_val = vec![];
-    if page_data.blog_page == "https://ameblo.jp/airisuzuki-officialblog/entry-12340462803.html" {
-        return (vec![], "".to_string());
-    }
+    // if page_data.blog_page != "https://ameblo.jp/airisuzuki-officialblog/entry-12340462803.html" {
+    //     return (vec![], "".to_string());
+    // }
     // println!("{}", page_data.blog_page);
     let mut html = Html::parse_document(&*_html.as_str().unwrap().replace("<br>", "\n"));
     let last_edit_date = DateTime::<Utc>::from_str(json["last_edit_datetime"].as_str().unwrap()).unwrap();
@@ -65,9 +71,9 @@ fn html_to_text(_html: Value, json: Value, page_data: PageData) -> (Vec<ImageDat
         html.remove_from_parent(&emoji);
     }
 
-    let noscript: Selector = Selector::parse("noscript").unwrap();
-    let noscripts: Vec<_> = html.select(&noscript).map(|x| x.id()).collect();
-    for noscript in noscripts {
+    let no_script: Selector = Selector::parse("noscript").unwrap();
+    let no_scripts: Vec<_> = html.select(&no_script).map(|x| x.id()).collect();
+    for noscript in no_scripts {
         html.remove_from_parent(&noscript);
     }
 
@@ -77,6 +83,7 @@ fn html_to_text(_html: Value, json: Value, page_data: PageData) -> (Vec<ImageDat
     // println!("{}", html.html());
 
     for (order, image) in images.iter().enumerate() {
+        // println!("{}", image.html());
         // println!("{}", image.value().attr("data-src").unwrap());
         return_val.push(ImageData {
             page_data: page_data.clone(),
@@ -97,7 +104,6 @@ fn html_to_text(_html: Value, json: Value, page_data: PageData) -> (Vec<ImageDat
 
 async fn get_page_count(client: Client, name: &str, page_count: Regex) -> u64 {
     let mut page_nums: Option<u64> = None;
-
     // let ASYNC_WAIT = |t: u64| async move { time::sleep(time::Duration::from_millis(t)).await };
     while page_nums.is_none() {
         match client
@@ -118,9 +124,9 @@ async fn get_page_count(client: Client, name: &str, page_count: Regex) -> u64 {
                                     .as_object()
                                     .unwrap()
                                     .iter()
-                                    .map(|x| {
+                                    .map(|(_, x)| {
                                         page_nums = Option::from(
-                                            x.1["paging"]["max_page"].as_u64().unwrap(),
+                                            x["paging"]["max_page"].as_u64().unwrap(),
                                         );
                                     })
                                     .collect::<Vec<_>>();
@@ -150,7 +156,7 @@ async fn get_page_count(client: Client, name: &str, page_count: Regex) -> u64 {
 
 async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<PageData> {
     let mut page_urls: Option<Vec<PageData>> = None;
-    let permit = semaphore.acquire().await.unwrap();
+    let _permit = semaphore.acquire().await.unwrap();
     while page_urls.is_none() {
         match client.get(&format!("https://ameblo.jp/{blog_name}/entrylist-{page}.html"))
             .send().await {
@@ -208,7 +214,7 @@ async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Re
             }
         }
     }
-    drop(permit);
+    // drop(_permit);
     page_urls.unwrap()
 }
 
@@ -243,7 +249,8 @@ fn theme_curator(theme: String, blog_id: String) -> String {
 
 async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex, semaphore: Arc<Semaphore>) -> Vec<ImageData> {
     let mut page_urls: Option<Vec<ImageData>> = None;
-    println!("start: {}", page_data.blog_page);
+    let _permit = semaphore.acquire().await.unwrap();
+    // println!("start: {}", page_data.blog_page);
     while page_urls.is_none() {
         match client.get(page_data.blog_page.as_str())
             .send().await {
@@ -284,20 +291,27 @@ async fn parse_article_page(client: Client, page_data: PageData, matcher: Regex,
         }
     }
     // drop(permit);
-    println!("end: {}", page_data.blog_page);
-
+    // println!("end: {}", page_data.blog_page);
     page_urls.unwrap().clone()
 }
 
-async fn download_file(client: Client, url: String, filename: String, semaphore: Arc<Semaphore>) {
+async fn download_file(client: Client, url: String, filename: String, semaphore: Arc<Semaphore>, modified_time: DateTime<FixedOffset>) {
     let _permit = semaphore.acquire().await.unwrap();
+
     match client.get(url).send().await {
         Ok(resp) => {
-            let mut file = async_fs::File::create(filename).await.unwrap();
+            let mut file = async_fs::File::create(filename.clone()).await.unwrap();
             file.write_all(resp.bytes().await.unwrap().as_ref()).await.unwrap();
+            set_file_times(filename.as_str().to_string(), FileTime::now(), FileTime::from(SystemTime::from(modified_time))).unwrap();
+            // let metadata = file.metadata().await.unwrap();
+            // metadata.modified().unwrap();
+
             file.flush().await.unwrap();
         }
-        Err(err) => { eprintln!("{}", err) }
+        Err(err) => {
+            eprintln!("{}", err);
+            panic!()
+        }
     }
 }
 
@@ -305,7 +319,7 @@ async fn download_file(client: Client, url: String, filename: String, semaphore:
 async fn main() {
     // console_subscriber::init();
     let client = Client::new();
-    let semaphore = Arc::new(Semaphore::new(100));
+    let semaphore = Arc::new(Semaphore::new(50));
     let mut tasks = Vec::new();
     let page_count: Regex = Regex::new(r"<script>window.INIT_DATA=(.*?)};").unwrap();
 
@@ -327,6 +341,7 @@ async fn main() {
         println!("{}: {}", NAMES[order], i);
     }
     let mut tasks = vec![];
+
     for i in 0..NAMES.len() {
         for j in 1..=list_page_count[i] {
             // println!("https://ameblo.jp/{}/entrylist-{}.html", NAMES[i], j);
@@ -345,20 +360,20 @@ async fn main() {
     }
     println!("{}", all_articles.len());
     let mut tasks = vec![];
-    let semaphore = Arc::new(Semaphore::new(1));
+    // let semaphore = Arc::new(Semaphore::new(2));
     for url in all_articles {
-        let limit = semaphore.clone();
-        let task = spawn({
-            let permit = limit.acquire().await.unwrap();
-            let ret = parse_article_page(client.clone(), url.clone(), page_count.clone(), semaphore.clone());
-            ret
-        }
+        let task = spawn(
+            parse_article_page(client.clone(), url.clone(), page_count.clone(), semaphore.clone())
         );
         tasks.push(task);
 
         // println!("{:?}", url);
     }
     let mut tasks_dl = vec![];
+
+    if !Path::is_dir(Path::new(".").join("images").as_path()) {
+        create_dir(Path::new(".").join("images").as_path()).unwrap();
+    }
     future::join_all(tasks).await.iter().for_each(|x| {
         x.as_ref().unwrap().iter().for_each(|x| {
             // let filename = x.filename.clone();
@@ -368,10 +383,10 @@ async fn main() {
             }
             let file_path = Path::new(".").join("images").join(&x.theme).join(&x.filename);
             let task = spawn(
-                download_file(client.clone(), url, file_path.to_str().unwrap().to_string(), semaphore.clone())
+                download_file(client.clone(), url, file_path.to_str().unwrap().to_string(), semaphore.clone(), x.page_data.last_edit_datetime)
             );
             tasks_dl.push(task);
-            println!("{} {} {} ", x.url, x.filename, x.date);
+            println!("{} {} {} ", x.url, x.filename, x.date.with_timezone(&FixedOffset::east_opt(9 * 3600).unwrap()));
         })
     });
     future::join_all(tasks_dl).await;
