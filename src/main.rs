@@ -1,3 +1,4 @@
+use std::clone::Clone;
 use std::fs::create_dir;
 use std::path::Path;
 use std::str::FromStr;
@@ -17,18 +18,22 @@ use tokio::io::AsyncWriteExt;
 use filetime::{FileTime, set_file_times};
 // use kdam::{Bar, BarExt};
 
-// const NAMES: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
-//     "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
-//     "morningmusume15ki", "morningmusume16ki", "beyooooonds-rfro", "beyooooonds-chicatetsu",
-//     "beyooooonds", "ocha-norma", "countrygirls", "risa-ogata", "kumai-yurina-blog",
-//     "sudou-maasa-blog", "sugaya-risako-blog", "miyamotokarin-official", "kobushi-factory",
-//     "sayumimichishige-blog", "kudo--haruka", "airisuzuki-officialblog", "angerme-ayakawada",
-//     "miyazaki-yuka-blog", "tsugunaga-momoko-blog", "tokunaga-chinami-blog", "c-ute-official",
-//     "tanakareina-blog", ];
+#[allow(dead_code)]
+const NAME_ALL: &[&str] = &["angerme-ss-shin", "angerme-amerika", "angerme-new", "juicejuice-official",
+    "tsubaki-factory", "morningmusume-9ki", "morningmusume-10ki", "mm-12ki", "morningm-13ki",
+    "morningmusume15ki", "morningmusume16ki", "beyooooonds-rfro", "beyooooonds-chicatetsu",
+    "beyooooonds", "ocha-norma", "countrygirls", "risa-ogata", "kumai-yurina-blog",
+    "sudou-maasa-blog", "sugaya-risako-blog", "miyamotokarin-official", "kobushi-factory",
+    "sayumimichishige-blog", "kudo--haruka", "airisuzuki-officialblog", "angerme-ayakawada",
+    "miyazaki-yuka-blog", "tsugunaga-momoko-blog", "tokunaga-chinami-blog", "c-ute-official",
+    "tanakareina-blog"];
+
+#[allow(dead_code)]
+const TEST_NAME: &[&str] = &["airisuzuki-officialblog"];
 
 
+const NAMES: &[&str] = TEST_NAME;
 
-const NAMES: &[&str] = &["airisuzuki-officialblog"];
 
 async fn async_wait(t: u64) { time::sleep(time::Duration::from_millis(t)).await }
 
