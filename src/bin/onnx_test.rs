@@ -7,7 +7,9 @@ use std::{fmt, fs};
 use std::fmt::Formatter;
 use std::io::Cursor;
 use image::imageops::FilterType;
+use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::geometric_transformations::{Interpolation, rotate};
+use imageproc::rect::Rect;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::wasm_bindgen;
 // use serde_json::Value::String;
@@ -111,8 +113,8 @@ pub fn infer(file_bytes: &[u8]) -> String {
     let session = SessionBuilder::new(&environment).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level1).unwrap()
         .with_intra_threads(1).unwrap()
-        .with_model_from_memory(include_bytes!("retinaface_sim.onnx"))
-        // .with_model_from_file(onnx_path)
+        // .with_model_from_memory(include_bytes!("retinaface_sim.onnx"))
+        .with_model_from_file(onnx_path)
         .unwrap();
 
     let tract_model = tract_onnx::onnx()
@@ -168,14 +170,14 @@ pub fn infer(file_bytes: &[u8]) -> String {
                                                  Rgb([0, 0, 0]))).crop(face.bbox[0] as u32, face.bbox[1] as u32, face.bbox[2] as u32 - face.bbox[0] as u32, face.bbox[3] as u32 - face.bbox[1] as u32));
         }
 
-        // draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), -face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
-        // draw_hollow_rect_mut(&mut draw_canvas, Rect::at(face.bbox[0] as i32, face.bbox[1] as i32).
-        //     of_size(face.bbox[2] as u32 - face.bbox[0] as u32,
-        //             face.bbox[3] as u32 - face.bbox[1] as u32),
-        //                      Rgb([0, 255, 244]));
-        // draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
+        let mut draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), -face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
+        draw_hollow_rect_mut(&mut draw_canvas, Rect::at(face.bbox[0] as i32, face.bbox[1] as i32).
+            of_size(face.bbox[2] as u32 - face.bbox[0] as u32,
+                    face.bbox[3] as u32 - face.bbox[1] as u32),
+                             Rgb([0, 255, 244]));
+        draw_canvas = rotate(&draw_canvas, (face_pos.0, face_pos.1), face_pos.2, Interpolation::Bilinear, Rgb([0, 0, 0]));
     }
-    // draw_canvas.save("test_rect.jpg").unwrap();
+    draw_canvas.save("test_rect.jpg").unwrap();
     let mut face_arr = Array::<f32, _>::zeros((faces.len(), 3usize, 224usize, 224usize)).into_dyn();
     for i in 0..faces.len() {
         // if faces[i].width() > 80 {
@@ -198,8 +200,8 @@ pub fn infer(file_bytes: &[u8]) -> String {
     let recognition_session = SessionBuilder::new(&recognition_environment).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level1).unwrap()
         .with_intra_threads(4).unwrap()
-        .with_model_from_memory(include_bytes!(r"face_recognition_sim.onnx"))
-        // .with_model_from_file(classifier_path)
+        // .with_model_from_memory(include_bytes!(r"face_recognition_sim.onnx"))
+        .with_model_from_file(classifier_path)
         .unwrap();
 
     let recognition_layout = face_arr.as_standard_layout();
@@ -222,9 +224,9 @@ pub fn infer(file_bytes: &[u8]) -> String {
 
 
 fn main() {
-    let image_path = "manaka_test.jpg";
+    let image_path = r#"\\192.168.250.1\share\helloproject-ai-data\blog_images\北川莉央\北川莉央=morningmusume15ki=12497149962-1.jpg"#;
     let image_bytes = fs::read(image_path).unwrap();
     let res = infer(image_bytes.as_slice());
-    println!("{}", res);
-    // println!("{}", serde_json::to_string_pretty(&serde_json::from_str::<Vec<Face>>(res.as_str()).unwrap()).unwrap());
+    // println!("{}", res);
+    println!("{}", serde_json::to_string_pretty(&serde_json::from_str::<Vec<Face>>(res.as_str()).unwrap()).unwrap());
 }
