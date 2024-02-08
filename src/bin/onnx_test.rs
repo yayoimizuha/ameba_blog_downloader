@@ -224,7 +224,7 @@ pub fn infer(file_bytes: &[u8]) -> String {
 
 
 fn main() {
-    let image_path = r#"\\192.168.250.1\share\helloproject-ai-data\blog_images\北川莉央\北川莉央=morningmusume15ki=12497149962-1.jpg"#;
+    let image_path = r#"C:\Users\tomokazu\WebstormProjects\hp-face-recognizer-wasm\src\assets\image-sample\portrait-3353699_1280.jpg"#;
     let image_bytes = fs::read(image_path).unwrap();
     let res = infer(image_bytes.as_slice());
     // println!("{}", res);
