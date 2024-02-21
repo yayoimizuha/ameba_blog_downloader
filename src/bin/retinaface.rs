@@ -1,97 +1,223 @@
-use std::fs;
+use std::{f32, fs};
+use std::env::args;
+use std::ops::{Div, Mul};
 use image::DynamicImage;
 use image::imageops::FilterType;
-use ndarray::{Array, ArrayBase, Axis, Ix, Ix4, IxDyn, OwnedRepr, s};
-use ort::{Environment, ExecutionProvider, GraphOptimizationLevel, NdArrayExtensions, SessionBuilder, Value};
-use ort::execution_providers::{CPUExecutionProviderOptions, DirectMLExecutionProviderOptions};
-use tract_onnx::prelude::*;
+use itertools::{enumerate, iproduct};
+use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, Ix2, s};
+use ort::{CPUExecutionProvider, CUDAExecutionProvider, GraphOptimizationLevel, inputs, Session, Value};
+use powerboxesrs::nms::nms;
+use serde::{Deserialize, Serialize};
 
-const ONNX_PATH: &str = r#"C:\Users\tomokazu\build\retinaface\retinaface.onnx"#;
+const ONNX_PATH: &str = r#"C:\Users\tomokazu\build\discipleofhamilton_retinaface\FaceDetector_sim.onnx"#;
 
 
-fn transform(image: DynamicImage, max_size: usize) -> ArrayBase<OwnedRepr<f32>, IxDyn> {
-    let resized_image = image.resize(max_size as u32, max_size as u32, FilterType::Triangle);
-    resized_image.save("resized.jpg").unwrap();
-    let mut onnx_input = Array::<f32, _>::zeros((1usize, 3usize, max_size, max_size)).into_dyn();
-    onnx_input.fill(1.0);
-    let resized_width = resized_image.width() as i32;
-    let resized_height = resized_image.height() as i32;
-
-    let (x_pad, y_pad) = match resized_width - resized_height {
-        x if x == 0 => {
-            (0, 0)
-        }
-        x if x < 0 => {
-            ((resized_height - resized_width) / 2, 0)
-        }
-        x if x > 0 => {
-            (0, (resized_width - resized_height) / 2)
-        }
-        _ => unreachable!()
+fn transform(image: DynamicImage, max_size: usize) -> Array4<f32> {
+    let resized_image = if max_size < image.width() as usize || max_size < image.height() as usize {
+        // image.resize(max_size as u32, max_size as u32, FilterType::Triangle)
+        image
+    } else {
+        // image.resize(max_size as u32, max_size as u32, FilterType::Triangle)
+        image
     };
+    // resized_image.save("prepare.jpg").unwrap();
+    let mut output_image = Array4::zeros((1usize, 3usize, resized_image.height() as usize, resized_image.width() as usize));
+    output_image.fill(0.);
 
     for (x, y, pixel) in resized_image.into_rgb32f().enumerate_pixels() {
         let [r, g, b] = pixel.0; // Normalize
-        onnx_input[[0usize, 0, y as usize, x as usize]] = (b - 0.485) / 0.229;
-        onnx_input[[0usize, 1, y as usize, x as usize]] = (g - 0.456) / 0.224;
-        onnx_input[[0usize, 2, y as usize, x as usize]] = (r - 0.406) / 0.225;
+        output_image[[0usize, 0, y as usize, x as usize]] = r;//(r as i16 - 104) as f32;
+        output_image[[0usize, 1, y as usize, x as usize]] = g;//(g as i16 - 117) as f32;
+        output_image[[0usize, 2, y as usize, x as usize]] = b;//(b as i16 - 123) as f32;
     }
-    onnx_input
+    // for (x, y, pixel) in resized_image.into_rgb8().enumerate_pixels() {
+    //     let [r, g, b] = pixel.0; // Normalize
+    //     output_image[[0usize, 0, y as usize, x as usize]] = (r as f32 - 0.485 * 255.0) / (0.229 * 255.0);
+    //     output_image[[0usize, 1, y as usize, x as usize]] = (g as f32 - 0.456 * 255.0) / (0.224 * 255.0);
+    //     output_image[[0usize, 2, y as usize, x as usize]] = (b as f32 - 0.406 * 255.0) / (0.225 * 255.0);
+    // }
+    // Rgb32FImage::from_fn(max_size as u32, max_size as u32, |x, y| {
+    //     let red = output_image[[0usize, 0usize, y as usize, x as usize]];
+    //     let green = output_image[[0usize, 1usize, y as usize, x as usize]];
+    //     let blue = output_image[[0usize, 2usize, y as usize, x as usize]];
+    //     Rgb([red, green, blue])
+    // }).save("prepare2.exr").unwrap();
+    output_image
 }
 
-fn main() {
-    const MAX_SIZE: usize = 1024;
-    const IMAGE_PATH: &str = r#"C:\Users\tomokazu\WebstormProjects\hp-face-recognizer-wasm\src\assets\image-sample\entrepreneur-593358_1280.jpg"#;
-    let image_bytes = fs::read(IMAGE_PATH).unwrap();
+
+fn prior_box(min_sizes: Vec<Vec<usize>>, steps: Vec<usize>, clip: bool, image_size: [usize; 2]) -> Array2<f32> {
+    let feature_maps = steps.iter().map(|&step| {
+        [f32::ceil(image_size[0] as f32 / step as f32) as i32,
+            f32::ceil(image_size[1] as f32 / step as f32) as i32]
+    }).collect::<Vec<_>>();
+    println!("{:?}", feature_maps);
+    let mut anchors: Vec<[f32; 4]> = vec![];
+    for (k, f) in enumerate(feature_maps) {
+        for (i, j) in iproduct!(0..f[0],0..f[1]) {
+            let t_min_sizes = &min_sizes[k];
+            for &min_size in t_min_sizes {
+                let s_kx = min_size as f32 / image_size[1] as f32;
+                let s_ky = min_size as f32 / image_size[0] as f32;
+                let dense_cx = [j as f32 + 0.5].iter().map(|x| x * steps[k] as f32 / image_size[1] as f32).collect::<Vec<_>>();
+                let dense_cy = [i as f32 + 0.5].iter().map(|y| y * steps[k] as f32 / image_size[0] as f32).collect::<Vec<_>>();
+                for (cy, cx) in iproduct!(dense_cy,dense_cx) {
+                    anchors.push([cx, cy, s_kx, s_ky]);
+                }
+            }
+        }
+    }
+    let mut output = arr2(&anchors);
+    if clip {
+        output = output.mapv(|x| f32::min(f32::max(x, 0.0), 1.0));
+    }
+    output
+}
+
+fn decode(loc: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) -> Array<f32, Ix2> {
+    let mut boxes = concatenate(Axis(1), &*vec![
+        (priors.slice(s![..,..2]).to_owned() + loc.slice(s![..,..2]).mul(variances[0]) * priors.slice(s![..,2..])).view(),
+        (priors.slice(s![..,2..]).to_owned() * loc.slice(s![..,2..]).mul(variances[1]).to_owned().mapv(f32::exp)).view(),
+    ]).unwrap();
 
 
-    let environment = Environment::builder()
-        .with_name("RetinaFace")
-        .with_execution_providers([
-            ExecutionProvider::DirectML(DirectMLExecutionProviderOptions::default()),
-            ExecutionProvider::CPU(CPUExecutionProviderOptions::default())
-        ])
-        .build().unwrap().into_arc();
+    let boxes_sub = boxes.slice(s![..,..2]).to_owned() - boxes.slice(s![..,2..]).div(2.0);
+    boxes.slice_mut(s![..,..2]).assign(&boxes_sub);
 
-    let session = SessionBuilder::new(&environment).unwrap()
+    let boxes_add = boxes.slice(s![..,2..]).to_owned() + boxes.slice(s![..,..2]);
+    boxes.slice_mut(s![..,2..]).assign(&boxes_add);
+    boxes
+}
+
+fn decode_landm(pre: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) -> Array<f32, Ix2> {
+    return concatenate(Axis(1),
+                       &*vec![
+                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,..2]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,2..4]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,4..6]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,6..8]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,8..10]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                       ]).unwrap();
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FoundFace {
+    bbox: [f32; 4],
+    score: f32,
+    landmarks: [[f32; 2]; 5],
+}
+
+pub fn infer(image_bytes: Vec<u8>) -> Result<Vec<FoundFace>, String> {
+    const MAX_SIZE: usize = 640;
+
+    let session = Session::builder().unwrap().with_execution_providers(
+        [
+            CUDAExecutionProvider::default().build(),
+            CPUExecutionProvider::default().build(),
+        ]).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
-        .with_intra_threads(4).unwrap()
+        .with_intra_threads(16).unwrap()
         .with_model_from_file(ONNX_PATH).unwrap();
 
-    println!("{:?}", session.inputs);
-    println!("{:?}", session.outputs);
+    let confidence_threshold = 0.6;
+    let nms_threshold = 0.7;
 
     let image;
     match image::load_from_memory(image_bytes.as_slice()) {
         Ok(i) => { image = i }
         Err(err) => {
             eprintln!("Error while loading image: {}", err);
-            panic!()
+            return Err(err.to_string());
         }
     };
-    let transformed_image = transform(image, MAX_SIZE);
+    let raw_image = transform(image, MAX_SIZE);
+    println!("{:?}", raw_image.dim());
+    let dims = raw_image.shape();
+    let mut arr = vec![];
+    for i in 0..dims[0] {
+        arr.push(vec![]);
+        for j in 0..dims[1] {
+            arr[i].push(vec![]);
+            for k in 0..dims[2] {
+                arr[i][j].push(vec![]);
+                for l in 0..dims[3] {
+                    arr[i][j][k].push(raw_image[[i, j, k, l]]);
+                }
+            }
+        }
+    }
+    fs::write("serialized_vec.txt", serde_json::to_string(&arr).unwrap()).unwrap();
 
-    // println!("{:?}", transformed_image.shape());
-
-    // println!("{}", transformed_image.slice(s![0,..,300,300..304]));
-    println!("{}", transformed_image.slice(s![0,..,0,0]));
-
-    let image_layout = transformed_image.as_standard_layout();
-    let onnx_input = vec![Value::from_array(session.allocator(), &image_layout).unwrap()];
+    let binding = raw_image.to_owned();
+    let input_shape = binding.shape();
+    // println!("{}", raw_image);
+    let onnx_input = inputs!["input"=>raw_image.view()].unwrap();
     let model_res = session.run(onnx_input).unwrap();
 
-    let [loc, conf, land] = match &model_res[..] {
-        [loc, conf, land, ..] => [loc, conf, land].map(|x| {
-            let arr = x.try_extract::<f32>().unwrap().view().to_owned();
-            println!("{:?}", arr.shape());
-            arr
-        }),
-        &_ => unreachable!(),
+    let transformed_size = array![input_shape[3], input_shape[2]].to_owned();
+    let scale_landmarks = concatenate(Axis(0), &*vec![transformed_size.view(); 5]).unwrap().mapv(|x| x as f32);
+    let scale_bboxes = concatenate(Axis(0), &*vec![transformed_size.view(); 2]).unwrap().mapv(|x| x as f32);
+    let variance = [0.1, 0.2];
+    let prior_box = prior_box(
+        vec![vec![16, 32], vec![64, 128], vec![256, 512]],
+        [8, 16, 32].into(),
+        false,
+        [input_shape[2], input_shape[3]],
+    );
+    // println!("{}", prior_box);
+    // const ONNX_OUTPUT_WIDTH: usize = 16800;
+    let extract = |tensor: &Value, _: usize| tensor.extract_tensor::<f32>().unwrap().view().to_owned();
+    let [ confidence, loc, landmark]
+        = [("confidence", 2), ("bbox", 4), ("landmark", 10)].map(|(label, width)| extract(model_res.get(label).unwrap(), width));
+
+    // let confidence = confidence.softmax(Axis(2));
+
+    // println!("{}", loc);
+
+
+    // println!("\n");
+    let mut boxes = decode(loc.slice(s![0,..,..]).to_owned(), prior_box.clone(), variance);
+    boxes = boxes * scale_bboxes;
+    let scores = confidence.slice(s![0,..,1]).to_owned() as Array<f32, Ix1>;
+    let mut landmarks = decode_landm(landmark.slice(s![0,..,..]).to_owned(), prior_box.clone(), variance);
+    landmarks = landmarks * scale_landmarks;
+
+    println!("{}", landmarks);
+    println!("{:?}", landmarks.dim());
+
+    let keep = nms(&boxes, &scores.mapv(|x| x as f64), nms_threshold, confidence_threshold).into_iter().collect::<Vec<_>>();
+
+
+    let mut faces = vec![];
+    for index in keep {
+        faces.push(FoundFace {
+            bbox: <[f32; 4]>::try_from(boxes.slice(s![index,..]).to_vec()).unwrap(),
+            score: *scores.get(index).unwrap(),
+            landmarks: <[[f32; 2]; 5]>::try_from(landmarks.slice(s![index,..]).to_vec().chunks_exact(2).map(|x| { <[f32; 2]>::try_from(x).unwrap() }).collect::<Vec<_>>()).unwrap(),
+        });
+        // print!("{}\t", boxes.slice(s![index,..]));
+        // print!("{}\t", scores.slice(s![index]));
+        // println!("{}", landmarks.slice(s![index,..]));
+    }
+    // println!("{:?}", faces);
+
+    Ok(faces)
+}
+
+
+fn main() {
+    let image_path = &args().collect::<Vec<String>>().clone()[1];
+    let image = fs::read(image_path).unwrap();
+
+    #[cfg(not(target_arch = "wasm32"))]{
+        let infer_res = infer(image).unwrap();
+        println!("{}", infer_res.len());
+        for face in infer_res {
+            // println!("{:?}", face);
+        }
     };
-    println!("{}", loc);
-    println!("{}", conf);
-    println!("{}", land);
-    // let res = conf.softmax(Axis(0));
-    // println!("{:?}", res);
-    println!("debug");
+    #[cfg(target_arch = "wasm32")]{
+        use wasm_bindgen_futures;
+        wasm_bindgen_futures::spawn_local(infer(image));
+    };
 }
