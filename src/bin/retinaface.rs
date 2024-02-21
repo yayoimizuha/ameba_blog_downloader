@@ -1,15 +1,15 @@
 use std::{f32, fs};
 use std::env::args;
-use std::ops::{Div, Mul};
+use std::ops::{Add, Div, Mul, Sub};
 use image::DynamicImage;
 use image::imageops::FilterType;
-use itertools::{enumerate, iproduct};
-use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, Ix2, s};
-use ort::{CPUExecutionProvider, CUDAExecutionProvider, GraphOptimizationLevel, inputs, Session, Value};
+use itertools::{enumerate, iproduct, Itertools};
+use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, Ix2, s, stack};
+use ort::{CPUExecutionProvider, CUDAExecutionProvider, DirectMLExecutionProvider, ExecutionProvider, ExecutionProviderDispatch, GraphOptimizationLevel, inputs, Session, TensorRTExecutionProvider, Value};
 use powerboxesrs::nms::nms;
 use serde::{Deserialize, Serialize};
 
-const ONNX_PATH: &str = r#"C:\Users\tomokazu\build\discipleofhamilton_retinaface\FaceDetector_sim.onnx"#;
+const ONNX_PATH: &str = r#"C:\Users\tomokazu\CLionProjects\ameba_blog_downloader\src\bin\mobilenet_retinaface.onnx"#;
 
 
 fn transform(image: DynamicImage, max_size: usize) -> Array4<f32> {
@@ -89,7 +89,27 @@ fn decode(loc: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) ->
     boxes
 }
 
-fn decode_landm(pre: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) -> Array<f32, Ix2> {
+fn nms_impl(boxes: Array<f32, Ix2>, scores: Array<f32, Ix1>, threshold: f32) {
+    let x1 = boxes.slice(s![..,1]).to_owned();
+    let y1 = boxes.slice(s![..,2]).to_owned();
+    let x2 = boxes.slice(s![..,3]).to_owned();
+    let y2 = boxes.slice(s![..,4]).to_owned();
+    // let scores = scores.as_slice().unwrap();
+
+    let areas = (x2 - x1).add(1.) * (y2 - y1).add(1.);
+    let order = scores.iter().enumerate().sorted_by_key(|x| x.1).map(|x| x.0).collect::<Vec<_>>();
+
+    let mut keep = vec![];
+
+    while order.len() > 0 {
+        let i = order.get(0).unwrap();
+        keep.push(i);
+
+        let xx1 = x1.iter()
+    }
+}
+
+fn decode_landmark(pre: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) -> Array<f32, Ix2> {
     return concatenate(Axis(1),
                        &*vec![
                            (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,..2]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
@@ -110,14 +130,24 @@ pub struct FoundFace {
 pub fn infer(image_bytes: Vec<u8>) -> Result<Vec<FoundFace>, String> {
     const MAX_SIZE: usize = 640;
 
-    let session = Session::builder().unwrap().with_execution_providers(
-        [
-            CUDAExecutionProvider::default().build(),
-            CPUExecutionProvider::default().build(),
-        ]).unwrap()
+    let execution_providers = [
+        TensorRTExecutionProvider::default().build(),
+        CUDAExecutionProvider::default().build(),
+        DirectMLExecutionProvider::default().build(),
+        CPUExecutionProvider::default().build(),
+    ];
+    for execution_provider in &execution_providers {
+        if execution_provider.is_available().unwrap() {
+            println!("{}", execution_provider.as_str());
+            break;
+        }
+    }
+    let session = Session::builder().unwrap()
+        .with_execution_providers(execution_providers).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
         .with_intra_threads(16).unwrap()
         .with_model_from_file(ONNX_PATH).unwrap();
+
 
     let confidence_threshold = 0.6;
     let nms_threshold = 0.7;
@@ -179,11 +209,15 @@ pub fn infer(image_bytes: Vec<u8>) -> Result<Vec<FoundFace>, String> {
     let mut boxes = decode(loc.slice(s![0,..,..]).to_owned(), prior_box.clone(), variance);
     boxes = boxes * scale_bboxes;
     let scores = confidence.slice(s![0,..,1]).to_owned() as Array<f32, Ix1>;
-    let mut landmarks = decode_landm(landmark.slice(s![0,..,..]).to_owned(), prior_box.clone(), variance);
+    let mut landmarks = decode_landmark(landmark.slice(s![0,..,..]).to_owned(), prior_box.clone(), variance);
     landmarks = landmarks * scale_landmarks;
 
     println!("{}", landmarks);
     println!("{:?}", landmarks.dim());
+
+    let det_score = scores.clone().insert_axis(Axis(1));
+    let determ = concatenate(Axis(1), &[boxes.view(), det_score.view()]).unwrap();
+    println!("{:?}", determ.dim());
 
     let keep = nms(&boxes, &scores.mapv(|x| x as f64), nms_threshold, confidence_threshold).into_iter().collect::<Vec<_>>();
 

@@ -12,7 +12,7 @@ regex = { version = "*", features = ["default"] }
 futures = { version = "*", features = ["default"] }
 serde_json = { version = "*", features = ["default", "preserve_order"] }
 serde = { version = "*", features = ["default", "derive"] }
-ort = { version = "2.0.0-rc.0", features = ["default", "cuda"] }
+ort = { version = "2.0.0-rc.0", features = ["default"] }
 #tract-onnx = { version = "*" }
 image = { version = "*", features = ["jpeg", "png"] }
 #tracing-subscriber = { version = "*", features = ["fmt", "env-filter"] }
