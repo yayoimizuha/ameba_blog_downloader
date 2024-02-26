@@ -1,6 +1,6 @@
-retinaface.onnx filter=lfs diff=lfs merge=lfs -text
-src/bin/face_recognition_sim.onnx filter=lfs diff=lfs merge=lfs -text
-src/bin/mobilenet_retinaface.onnx filter=lfs diff=lfs merge=lfs -text
-src/bin/resnet_retinaface.onnx filter=lfs diff=lfs merge=lfs -text
+; retinaface.onnx filter=lfs diff=lfs merge=lfs -text
+src/lib/retinaface/face_recognition_sim.onnx filter=lfs diff=lfs merge=lfs -text
+src/lib/retinaface/mobilenet_retinaface.onnx filter=lfs diff=lfs merge=lfs -text
+src/lib/retinaface/resnet_retinaface.onnx filter=lfs diff=lfs merge=lfs -text
 
 *.onnx filter=lfs diff=lfs merge=lfs -text
