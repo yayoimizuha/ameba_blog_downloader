@@ -1,0 +1,249 @@
+use std::cell::RefCell;
+use std::string::String;
+use std::collections::{HashMap, HashSet};
+use std::env::current_dir;
+use std::error;
+use std::fmt::format;
+use std::fs::{create_dir, File};
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+use chrono::{DateTime, FixedOffset, Utc};
+use futures::future::join_all;
+use once_cell::sync::Lazy;
+use reqwest::Client;
+use serde_json::Value;
+use tokio::{spawn, sync};
+use tokio::sync::Semaphore;
+use anyhow::Error;
+use filetime::{FileTime, set_file_times};
+use html5ever::interface::TreeSink;
+use itertools::Itertools;
+use scraper::{Html, Selector};
+use sqlx::{Connection, SqliteConnection};
+use tokio::io::AsyncWriteExt;
+
+static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(100)));
+const DATA_PATH: &str = r#"D:\helloproject-ai-data"#;
+static SQLITE_MEMORY: sync::OnceCell<Arc<Mutex<SqliteConnection>>> = sync::OnceCell::const_new();
+
+static CREATED_USER_DIR: Lazy<Arc<Mutex<HashSet<String>>>> = Lazy::new(|| Arc::new(Mutex::new(HashSet::new())));
+
+#[derive(Clone, Debug)]
+struct PageData {
+    article_url: String,
+    #[allow(dead_code)]
+    comment_api: String,
+    last_edit_datetime: DateTime<FixedOffset>,
+    theme: String,
+    blog_key: String,
+    article_id: u64,
+}
+
+// #[derive(Clone, Debug)]
+// struct ImageData {
+//     theme: String,
+//     blog_key: String,
+//     entry_id: i64,
+//     file_order: i32,
+//     date: DateTime<Utc>,
+// }
+//
+// impl ImageData {
+//     fn filepath(&self) -> PathBuf {
+//         Path::new(DATA_PATH).join("blog_images").join(format!(
+//             "{}={}={}-{}.jpg",
+//             self.theme, self.blog_key, self.entry_id, self.file_order
+//         ))
+//     }
+// }
+
+fn find_init_json(input: String) -> Option<String> {
+    match input.find("window.INIT_DATA=") {
+        Some(begin) => {
+            match input[begin..].find("};") {
+                Some(end) => {
+                    Some(String::from(
+                        &input[begin + "window.INIT_DATA=".len()..begin + end + 1]
+                    ))
+                }
+                None => None,
+            }
+        }
+        None => None
+    }
+}
+
+async fn get_page_count(client: Client, blog_key: String) -> Option<(String, u64)> {
+    let _permit = SEMAPHORE.acquire().await.unwrap();
+    match client.get(&format!("https://ameblo.jp/{blog_key}/entrylist.html")).send().await {
+        Ok(resp) => {
+            match serde_json::from_str::<Value>(
+                find_init_json(resp.text().await.unwrap()).unwrap().as_str()
+            ) {
+                Ok(json) => {
+                    match &json["entryState"]["blogPageMap"] {
+                        Value::Object(x) => {
+                            Some((blog_key,
+                                  x.iter().next().unwrap().1["paging"]["max_page"].as_u64().unwrap()
+                            ))
+                        }
+                        _ => unreachable!()
+                    }
+                }
+                Err(_) => None
+            }
+        }
+        Err(_) => None
+    }
+}
+
+async fn parse_list_page(client: Client, blog_key: String, page_number: u64) -> Result<Vec<PageData>, Error> {
+    let _permit = SEMAPHORE.acquire().await.unwrap();
+    let entry_list_url = &format!("https://ameblo.jp/{blog_key}/entrylist-{page_number}.html");
+    let resp = client.get(entry_list_url).send().await?.text().await.unwrap();
+    let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
+    Ok(json["entryState"]["entryMap"].as_object().unwrap().into_iter().map(|(_, article_info)| {
+        let entry_id = article_info["entry_id"].as_u64().unwrap();
+        let blog_id = article_info["blog_id"].as_u64().unwrap();
+        let theme = theme_curator(article_info["theme_name"].as_str().unwrap().to_string(), &blog_key);
+        let last_edit_datetime =
+            DateTime::parse_from_rfc3339(article_info["last_edit_datetime"].as_str().unwrap()).unwrap();
+        let article_url = format!("https://ameblo.jp/{}/entry-{}.html", blog_key, entry_id);
+        let comment_api = format!("https://ameblo.jp/_api/blogComments;\
+                                amebaId={blog_key};blogId={blog_id};entryId={entry_id};\
+                                excludeReplies=false;limit=1;offset=0");
+        match article_info["publish_flg"].as_str().unwrap() {
+            "open" => {
+                Some(PageData {
+                    article_url,
+                    comment_api,
+                    last_edit_datetime,
+                    theme,
+                    blog_key: blog_key.clone(),
+                    article_id: entry_id,
+                })
+            }
+            x => {
+                eprintln!("{x} at {article_url} in {entry_list_url}");
+                None
+            }
+        }
+    }).filter_map(|x| x).collect::<Vec<_>>())
+}
+
+fn theme_curator(theme: String, blog_id: &String) -> String {
+    let theme_val = match blog_id.as_str() {
+        "risa-ogata" => "小片リサ",
+        "shimizu--saki" => "清水佐紀",
+        "kumai-yurina-blog" => "熊井友理奈",
+        "sudou-maasa-blog" => "須藤茉麻",
+        "sugaya-risako-blog" => "菅谷梨沙子",
+        "miyamotokarin-official" => "宮本佳林",
+        "sayumimichishige-blog" => "道重さゆみ",
+        "kudo--haruka" => "工藤遥",
+        "airisuzuki-officialblog" => "鈴木愛理",
+        "angerme-ayakawada" => "和田彩花",
+        "miyazaki-yuka-blog" => "宮崎由加",
+        "tsugunaga-momoko-blog" => "嗣永桃子",
+        "natsuyaki-miyabi-blog" => "夏焼雅",
+        "tokunaga-chinami-blog" => "徳永千奈美",
+        "tanakareina-blog" => "田中れいな",
+        "ozeki-mai-official" => "小関舞",
+        _ => theme.as_str()
+    };
+    if theme_val == "梁川 奈々美" {
+        "梁川奈々美".to_owned()
+    } else {
+        theme_val.to_owned()
+    }
+}
+
+async fn parse_article_page(client: Client, page_data: PageData) -> Result<i32, Error> {
+    let _permit = SEMAPHORE.acquire().await.unwrap();
+    let resp = client.get(page_data.article_url.clone()).send().await?.text().await.unwrap();
+    let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
+    let (_, &ref entry_main) = json["entryState"]["entryMap"].as_object().unwrap().iter().next().unwrap();
+    // println!("{}", entry_main["entry_text"]);
+    let mut html = Html::parse_document(entry_main["entry_text"].clone().as_str().unwrap());
+
+    let emoji_selector = Selector::parse("img.emoji").unwrap();
+    let emojis: Vec<_> = html.select(&emoji_selector).map(|x| x.id()).collect();
+    for emoji in &emojis {
+        html.remove_from_parent(&emoji);
+    }
+
+    let no_script: Selector = Selector::parse("noscript").unwrap();
+    let no_scripts: Vec<_> = html.select(&no_script).map(|x| x.id()).collect();
+    for noscript in no_scripts {
+        html.remove_from_parent(&noscript);
+    }
+
+    let image_selector = Selector::parse("img[class=PhotoSwipeImage]").unwrap();
+    {
+        let exist_hashset = Arc::clone(&CREATED_USER_DIR);
+        if !exist_hashset.lock().unwrap().contains(page_data.theme.as_str()) {
+            create_dir(Path::new(DATA_PATH).join("blog_images").join(page_data.theme.clone()).as_path()).unwrap();
+        }
+    }
+    println!("{}", page_data.article_url);
+    let mut image_count = 0;
+    let image_urls = html.select(&image_selector).map(|elm| elm.value().attr("data-src").unwrap().to_string()).collect::<Vec<_>>();
+    // image_count += 2;
+    // let image_url = image_elm.value().attr("data-src").unwrap().to_string();
+    // println!("{}", image_url);
+    // let clone_client = client.clone();
+    // let resp = clone_client.get(image_url).send().await.unwrap();
+    // let file_path = Path::new(DATA_PATH).join("blog_images")
+    //     .join(format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_key, page_data.article_id, order));
+    // download_file(client.clone(), file_path, page_data.last_edit_datetime, image_url).await;
+    // tokio::fs::File::create(file_path.as_path()).await.unwrap().write_all(resp.bytes().await.unwrap().as_ref()).await.unwrap();
+    // set_file_times(file_path, FileTime::now(), FileTime::from(SystemTime::from(page_data.last_edit_datetime))).unwrap();
+// };
+
+
+    Ok(image_count)
+}
+
+async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedOffset>, url: String) {
+    let resp = client.get(url).send().await.unwrap();
+    tokio::fs::File::create(file_path.as_path()).await.unwrap().write_all(resp.bytes().await.unwrap().as_ref()).await.unwrap();
+    set_file_times(file_path, FileTime::now(), FileTime::from(SystemTime::from(date))).unwrap();
+}
+
+#[tokio::main]
+async fn main() {
+    let blog_names_file: PathBuf = Path::new(&current_dir().unwrap()).join("blog_names.txt");
+
+    let blog_list = BufReader::new(File::open(blog_names_file).unwrap()).lines().map(
+        |x| x.unwrap()
+    ).collect::<Vec<_>>();
+    let reqwest_client = Client::new();
+
+    let page_counts = join_all(blog_list.iter().map(|blog_key| {
+        spawn(get_page_count(
+            reqwest_client.clone(),
+            blog_key.into(),
+        ))
+    })).await.into_iter().map(|x| x.unwrap().unwrap()).collect::<HashMap<_, _>>();
+
+    let all_pages = join_all(page_counts.into_iter().map(|(blog_key, count)| {
+        (0..=count).map(move |x| (blog_key.clone(), x))
+    }).flatten().map(|(blog_key, page_num)| {
+        spawn(parse_list_page(
+            reqwest_client.clone(),
+            blog_key,
+            page_num,
+        ))
+    })).await.into_iter().filter_map(|x| x.unwrap().ok()).flatten();
+
+    SQLITE_MEMORY.get_or_init(|| async { Arc::new(Mutex::new(SqliteConnection::connect("sqlite::memory:").await.unwrap())) }).await;
+    // println!("{}", all_pages.count());
+    let count: i32 = join_all(all_pages.map(|x| {
+        spawn(
+            parse_article_page(reqwest_client.clone(), x)
+        )
+    })).await.into_iter().filter_map(|x| x.unwrap().ok()).sum();
+    ()
+}

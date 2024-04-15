@@ -34,6 +34,7 @@ const TEST_NAME: &[&str] = &["airisuzuki-officialblog"];
 
 const NAMES: &[&str] = TEST_NAME;
 
+const DATA_PATH: &str = r#"D:\helloproject-ai-data"#;
 
 async fn async_wait(t: u64) { time::sleep(time::Duration::from_millis(t)).await }
 
@@ -224,31 +225,29 @@ async fn parse_list_page(client: Client, blog_name: &str, page: u64, matcher: Re
 }
 
 fn theme_curator(theme: String, blog_id: String) -> String {
-    let theme_val;
-    match blog_id.as_str() {
-        // "" => theme_val = "null".to_owned(),
-        "risa-ogata" => theme_val = "小片リサ".to_owned(),
-        "shimizu--saki" => theme_val = "清水佐紀".to_owned(),
-        "kumai-yurina-blog" => theme_val = "熊井友理奈".to_owned(),
-        "sudou-maasa-blog" => theme_val = "須藤茉麻".to_owned(),
-        "sugaya-risako-blog" => theme_val = "菅谷梨沙子".to_owned(),
-        "miyamotokarin-official" => theme_val = "宮本佳林".to_owned(),
-        "sayumimichishige-blog" => theme_val = "道重さゆみ".to_owned(),
-        "kudo--haruka" => theme_val = "工藤遥".to_owned(),
-        "airisuzuki-officialblog" => theme_val = "鈴木愛理".to_owned(),
-        "angerme-ayakawada" => theme_val = "和田彩花".to_owned(),
-        "miyazaki-yuka-blog" => theme_val = "宮崎由加".to_owned(),
-        "tsugunaga-momoko-blog" => theme_val = "嗣永桃子".to_owned(),
-        "natsuyaki-miyabi-blog" => theme_val = "夏焼雅".to_owned(),
-        "tokunaga-chinami-blog" => theme_val = "徳永千奈美".to_owned(),
-        "tanakareina-blog" => theme_val = "田中れいな".to_owned(),
-        "ozeki-mai-official" => theme_val = "小関舞".to_owned(),
-        _ => theme_val = theme
-    }
+    let theme_val = match blog_id.as_str() {
+        "risa-ogata" => "小片リサ",
+        "shimizu--saki" => "清水佐紀",
+        "kumai-yurina-blog" => "熊井友理奈",
+        "sudou-maasa-blog" => "須藤茉麻",
+        "sugaya-risako-blog" => "菅谷梨沙子",
+        "miyamotokarin-official" => "宮本佳林",
+        "sayumimichishige-blog" => "道重さゆみ",
+        "kudo--haruka" => "工藤遥",
+        "airisuzuki-officialblog" => "鈴木愛理",
+        "angerme-ayakawada" => "和田彩花",
+        "miyazaki-yuka-blog" => "宮崎由加",
+        "tsugunaga-momoko-blog" => "嗣永桃子",
+        "natsuyaki-miyabi-blog" => "夏焼雅",
+        "tokunaga-chinami-blog" => "徳永千奈美",
+        "tanakareina-blog" => "田中れいな",
+        "ozeki-mai-official" => "小関舞",
+        _ => theme.as_str()
+    };
     if theme_val == "梁川 奈々美" {
         "梁川奈々美".to_owned()
     } else {
-        theme_val
+        theme_val.to_owned()
     }
 }
 
@@ -326,7 +325,7 @@ async fn main() {
     let client = Client::new();
     let semaphore = Arc::new(Semaphore::new(50));
     let mut tasks = Vec::new();
-    let page_count: Regex = Regex::new(r"<script>window.INIT_DATA=(.*?)};").unwrap();
+    let page_count = Regex::new(r"<script>window.INIT_DATA=(.*?)};").unwrap();
 
     for name in NAMES {
         let task = spawn(get_page_count(
@@ -376,17 +375,17 @@ async fn main() {
     }
     let mut tasks_dl = vec![];
 
-    if !Path::is_dir(Path::new("../..").join("../../images").as_path()) {
-        create_dir(Path::new("../..").join("../../images").as_path()).unwrap();
+    if !Path::is_dir(Path::new(DATA_PATH).join("../../images").as_path()) {
+        create_dir(Path::new(DATA_PATH).join("../../images").as_path()).unwrap();
     }
     future::join_all(tasks).await.iter().for_each(|x| {
         x.as_ref().unwrap().iter().for_each(|x| {
             // let filename = x.filename.clone();
             let url = x.url.clone();
-            if !Path::is_dir(Path::new("../..").join("../../images").join(&x.theme).as_path()) {
-                create_dir(Path::new("../..").join("../../images").join(&x.theme).as_path()).unwrap();
+            if !Path::is_dir(Path::new(DATA_PATH).join("../../images").join(&x.theme).as_path()) {
+                create_dir(Path::new(DATA_PATH).join("../../images").join(&x.theme).as_path()).unwrap();
             }
-            let file_path = Path::new("../..").join("../../images").join(&x.theme).join(&x.filename);
+            let file_path = Path::new(DATA_PATH).join("../../images").join(&x.theme).join(&x.filename);
             let task = spawn(
                 download_file(client.clone(), url, file_path.to_str().unwrap().to_string(), semaphore.clone(), x.page_data.last_edit_datetime)
             );

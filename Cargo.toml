@@ -36,3 +36,6 @@ filetime = { version = "*" }
 ndarray-npy = { version = "0.8.1" }
 itertools = { version = "*" }
 powerboxesrs = { version = "*" }
+once_cell = { version = "*" }
+anyhow = { version = "*" }
+sqlx = { version = "*", features = ["runtime-tokio-native-tls", "default", "sqlite", "chrono"] }
