@@ -39,3 +39,4 @@ powerboxesrs = { version = "*" }
 once_cell = { version = "*" }
 anyhow = { version = "*" }
 sqlx = { version = "*", features = ["runtime-tokio-native-tls", "default", "sqlite", "chrono"] }
+dotenv = { version = "*" }
