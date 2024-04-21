@@ -22,7 +22,7 @@ use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom::{RcDom, Handle, NodeData};
 use itertools::{all, Itertools};
-use kdam::{BarExt, tqdm};
+use kdam::{Bar, BarExt, tqdm};
 use sqlx::{Acquire, Connection, Executor, SqlitePool};
 use sqlx::migrate::Migrate;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteQueryResult};
@@ -102,11 +102,12 @@ fn create_directory_if_not_exist(theme: &String) {
     }
 }
 
-async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exists: Arc<HashMap<i64, DateTime<FixedOffset>>>) -> Result<Vec<PageData>, Error> {
+async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exists: Arc<HashMap<i64, DateTime<FixedOffset>>>, progress: Arc<Mutex<Bar>>) -> Result<Vec<PageData>, Error> {
     let _permit = SEMAPHORE.acquire().await.unwrap();
     let entry_list_url = &format!("https://ameblo.jp/{blog_key}/entrylist-{page_number}.html");
     let resp = client.get(entry_list_url).send().await?.text().await.unwrap();
     let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
+    progress.lock().unwrap().update(1).unwrap();
     Ok(match json["entryState"]["entryMap"].as_object() {
         None => {
             println!("{}", json);
@@ -236,7 +237,7 @@ fn html2text(handle: &Handle) -> (String, Vec<String>) {
     }
 }
 
-async fn parse_article_page(client: Client, page_data: PageData) -> Result<(PageData, String, Vec<(String, PathBuf, DateTime<FixedOffset>)>), Error> {
+async fn parse_article_page(client: Client, page_data: PageData, progress: Arc<Mutex<Bar>>) -> Result<(PageData, String, Vec<(String, PathBuf, DateTime<FixedOffset>)>), Error> {
     let _permit = SEMAPHORE.acquire().await.unwrap();
     let resp = client.get(page_data.article_url.clone()).send().await?.text().await.unwrap();
     let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
@@ -249,10 +250,13 @@ async fn parse_article_page(client: Client, page_data: PageData) -> Result<(Page
             format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_key, page_data.article_id, order)),
         page_data.last_edit_datetime
     )).collect::<Vec<_>>();
+
+    progress.lock().unwrap().update(1).unwrap();
+
     Ok((page_data, text, images))
 }
 
-async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedOffset>, url: String, id: i64, dl_manager: Arc<Mutex<HashMap<i64, usize>>>) {
+async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedOffset>, url: String, id: i64, dl_manager: Arc<Mutex<HashMap<i64, usize>>>, progress: Arc<Mutex<Bar>>) {
     let _permit = SEMAPHORE.acquire().await.unwrap();
     let resp = client.get(url).send().await.unwrap();
     tokio::fs::File::create(file_path.as_path()).await.unwrap().write_all(resp.bytes().await.unwrap().as_ref()).await.unwrap();
@@ -273,6 +277,7 @@ async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedO
                 SQLITE_DB.get().unwrap().lock().unwrap().clone()
             })()).await.unwrap();
     }
+    progress.lock().unwrap().update(1).unwrap();
 }
 
 #[tokio::main]
@@ -311,12 +316,18 @@ async fn main() {
         .map(|(a, b): &(i64, String)| (*a, DateTime::parse_from_rfc3339(b.deref()).unwrap())).collect());
     // println!("{:?}", exists);
 
+    let progress_parse_list = Arc::new(Mutex::new(
+        tqdm!(total=page_counts.clone().iter().map(|x|*x.1 as usize).sum::<usize>(),
+            desc="list page parsing...",animation="ascii",force_refresh=true)));
     println!("start parsing list pages");
     let all_pages = join_all(page_counts.into_iter().map(|(blog_key, count)| {
         (1..=count).map(move |x| (blog_key.clone(), x))
     }).flatten().map(|(blog_key, page_num)| {
-        let exists = Arc::clone(&exists);
-        spawn(parse_list_page(reqwest_client.clone(), blog_key, page_num, exists))
+        spawn({
+            let exists = Arc::clone(&exists);
+            let progress_clone = Arc::clone(&progress_parse_list);
+            parse_list_page(reqwest_client.clone(), blog_key, page_num, exists, progress_clone)
+        })
     })).await.into_iter().filter_map(|x| x.unwrap().ok()).flatten().collect::<Vec<_>>();
 
 
@@ -324,15 +335,14 @@ async fn main() {
     let downloaded_time = Local::now();
     let mut image_download_map: HashMap<i64, Vec<_>> = HashMap::new();
 
-    let mut progress_1 = tqdm!(total=all_pages.len(),desc="page parsing...",animation="ascii",force_refresh=true);
-    let mut progress_2 = tqdm!(total=all_pages.len(),desc="sql updating...",animation="ascii",force_refresh=true);
+    let progress_parse_article = Arc::new(Mutex::new(tqdm!(total=all_pages.len(),desc="page parsing...",animation="ascii",force_refresh=true)));
+    let mut progress_update_sql = tqdm!(total=all_pages.len(),desc="sql updating...",animation="ascii",force_refresh=true);
 
     println!("start parsing article pages");
     for (page_data, main_text, a) in join_all(all_pages.into_iter().map(|x| {
         let a = spawn({
-            let b = parse_article_page(reqwest_client.clone(), x);
-            progress_1.update(1).unwrap();
-            b
+            let progress_clone = Arc::clone(&progress_parse_article);
+            parse_article_page(reqwest_client.clone(), x, progress_clone)
         }
         );
         a
@@ -357,19 +367,19 @@ async fn main() {
             .bind(page_data.comment_api)
             .execute(&mut *trans).await.unwrap();
         image_download_map.insert(page_data.article_id, a);
-        progress_2.update(1).unwrap();
+        progress_update_sql.update(1).unwrap();
     }
     trans.commit().await.unwrap();
-    let mut progress = tqdm!(total=image_download_map.len(),desc="image downloading...",animation="ascii",force_refresh=true);
+    let mut image_progress = Arc::new(Mutex::new(tqdm!(total=image_download_map.len(),desc="image downloading...",animation="ascii",force_refresh=true)));
     let download_counter = Arc::new(Mutex::new(image_download_map.iter().map(|(&article_id, vector)| (article_id, vector.len())).collect::<HashMap<_, _>>()));
 
     println!("start downloading images");
     join_all(image_download_map.into_iter().map(|(article_id, images)|
         images.into_iter().map(move |val| (article_id, val))).flatten().collect::<Vec<_>>()
         .into_iter().map(|(id, (url, path, date))| {
-        let arc = Arc::clone(&download_counter);
-        let res = spawn(download_file(reqwest_client.clone(), path, date, url, id, arc));
-        progress.update(1).unwrap();
+        let dl_counter = Arc::clone(&download_counter);
+        let progress_clone = Arc::clone(&image_progress);
+        let res = spawn(download_file(reqwest_client.clone(), path, date, url, id, dl_counter, progress_clone));
         res
     })).await.into_iter();
 
