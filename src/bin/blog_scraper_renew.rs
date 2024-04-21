@@ -1,16 +1,14 @@
-use std::cell::RefCell;
 use std::string::String;
 use std::collections::{HashMap, HashSet};
 use std::env::current_dir;
-use std::error;
-use std::fmt::format;
 use std::fs::{create_dir, File};
 use std::io::{BufRead, BufReader};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset};
 use futures::future::join_all;
 use once_cell::sync::Lazy;
 use reqwest::Client;
@@ -19,10 +17,11 @@ use tokio::{spawn, sync};
 use tokio::sync::Semaphore;
 use anyhow::Error;
 use filetime::{FileTime, set_file_times};
-use html5ever::interface::TreeSink;
+use html5ever::parse_document;
+use html5ever::tendril::TendrilSink;
+use markup5ever_rcdom::{RcDom, Handle, NodeData};
 use itertools::Itertools;
-use scraper::{Html, Selector};
-use sqlx::{Acquire, Connection, SqliteConnection, SqlitePool};
+use sqlx::{Acquire, Connection, Executor, SqlitePool};
 use sqlx::migrate::Migrate;
 use sqlx::sqlite::SqliteConnectOptions;
 use tokio::io::AsyncWriteExt;
@@ -41,26 +40,9 @@ struct PageData {
     last_edit_datetime: DateTime<FixedOffset>,
     theme: String,
     blog_key: String,
-    article_id: u64,
+    article_id: i64,
+    entry_title: String,
 }
-
-// #[derive(Clone, Debug)]
-// struct ImageData {
-//     theme: String,
-//     blog_key: String,
-//     entry_id: i64,
-//     file_order: i32,
-//     date: DateTime<Utc>,
-// }
-//
-// impl ImageData {
-//     fn filepath(&self) -> PathBuf {
-//         Path::new(DATA_PATH).join("blog_images").join(format!(
-//             "{}={}={}-{}.jpg",
-//             self.theme, self.blog_key, self.entry_id, self.file_order
-//         ))
-//     }
-// }
 
 fn find_init_json(input: String) -> Option<String> {
     match input.find("window.INIT_DATA=") {
@@ -102,17 +84,26 @@ async fn get_page_count(client: Client, blog_key: String) -> Option<(String, u64
     }
 }
 
-async fn parse_list_page(client: Client, blog_key: String, page_number: u64) -> Result<Vec<PageData>, Error> {
+async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exists: Arc<HashMap<i64, DateTime<FixedOffset>>>) -> Result<Vec<PageData>, Error> {
     let _permit = SEMAPHORE.acquire().await.unwrap();
     let entry_list_url = &format!("https://ameblo.jp/{blog_key}/entrylist-{page_number}.html");
     let resp = client.get(entry_list_url).send().await?.text().await.unwrap();
     let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
     Ok(json["entryState"]["entryMap"].as_object().unwrap().into_iter().map(|(_, article_info)| {
-        let entry_id = article_info["entry_id"].as_u64().unwrap();
-        let blog_id = article_info["blog_id"].as_u64().unwrap();
-        let theme = theme_curator(article_info["theme_name"].as_str().unwrap().to_string(), &blog_key);
+        let entry_id = article_info["entry_id"].as_i64().unwrap();
         let last_edit_datetime =
             DateTime::parse_from_rfc3339(article_info["last_edit_datetime"].as_str().unwrap()).unwrap();
+        match exists.get(&entry_id) {
+            None => {}
+            Some(date) => {
+                if last_edit_datetime == *date {
+                    return None;
+                };
+            }
+        }
+        let blog_id = article_info["blog_id"].as_i64().unwrap();
+        let theme = theme_curator(article_info["theme_name"].as_str().unwrap().to_string(), &blog_key);
+        let entry_title = article_info["entry_title"].as_str().unwrap().to_string();
         let article_url = format!("https://ameblo.jp/{}/entry-{}.html", blog_key, entry_id);
         let comment_api = format!("https://ameblo.jp/_api/blogComments;\
                                 amebaId={blog_key};blogId={blog_id};entryId={entry_id};\
@@ -124,6 +115,7 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64) -> 
                     comment_api,
                     last_edit_datetime,
                     theme,
+                    entry_title,
                     blog_key: blog_key.clone(),
                     article_id: entry_id,
                 })
@@ -163,62 +155,71 @@ fn theme_curator(theme: String, blog_id: &String) -> String {
     }
 }
 
-async fn parse_article_page(client: Client, page_data: PageData)
-                            -> Result<(Vec<(String, PathBuf, DateTime<FixedOffset>)>), Error> {
+fn html2text(handle: &Handle) -> (String, Vec<String>) {
+    let node = handle;
+    match node.data {
+        NodeData::Text { ref contents } => {
+            (contents.borrow().to_string(), vec![])
+        }
+        NodeData::Element { ref name, ref attrs, .. } => {
+            match name.local.to_string().as_str() {
+                "br" | "noscript" => ("\n".to_string(), vec![]),
+                "img" => {
+                    match attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "class") {
+                        None => ("".to_string(), vec![]),
+                        Some(attr) => {
+                            match attr.value.to_string().as_str() {
+                                "PhotoSwipeImage" => {
+                                    (format!("-----image-----{}-----",
+                                             attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "data-image-order").unwrap().value.to_string()),
+                                     vec![attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "data-src").unwrap().value.to_string()])
+                                }
+                                _ => ("".to_string(), vec![])
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    let mut images = vec![];
+                    let mut article = "".to_string();
+                    let _ = node.children.borrow().iter().map(|child| html2text(child)).map(|(txt, image)| {
+                        article = format!("{article}{txt}");
+                        images.extend(image)
+                    }).collect::<Vec<_>>();
+                    if name.local.to_string() == "p" {
+                        article += "\n"
+                    }
+                    (article, images)
+                }
+            }
+        }
+        NodeData::Document {} => {
+            let mut images = vec![];
+            let mut article = "".to_string();
+            let _ = node.children.borrow().iter().map(|child| html2text(child)).map(|(txt, image)| {
+                article = format!("{article}{txt}");
+                images.extend(image)
+            }).collect::<Vec<_>>();
+            (article, images)
+        }
+        _ => ("".to_string(), vec![])
+    }
+}
+
+async fn parse_article_page(client: Client, page_data: PageData) -> Result<(PageData, String, Vec<(String, PathBuf, DateTime<FixedOffset>)>), Error> {
     let _permit = SEMAPHORE.acquire().await.unwrap();
     let resp = client.get(page_data.article_url.clone()).send().await?.text().await.unwrap();
     let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
     let (_, &ref entry_main) = json["entryState"]["entryMap"].as_object().unwrap().iter().next().unwrap();
-    // println!("{}", entry_main["entry_text"]);
-    let mut html = Html::parse_document(entry_main["entry_text"].clone().as_str().unwrap());
-
-    let emoji_selector = Selector::parse("img.emoji").unwrap();
-    let emojis: Vec<_> = html.select(&emoji_selector).map(|x| x.id()).collect();
-    for emoji in &emojis {
-        html.remove_from_parent(&emoji);
-    }
-
-    let no_script: Selector = Selector::parse("noscript").unwrap();
-    let no_scripts: Vec<_> = html.select(&no_script).map(|x| x.id()).collect();
-    for noscript in no_scripts {
-        html.remove_from_parent(&noscript);
-    }
-
-    let image_selector = Selector::parse("img[class=PhotoSwipeImage]").unwrap();
-    {
-        let exist_hashset = Arc::clone(&CREATED_USER_DIR);
-        if !exist_hashset.lock().unwrap().contains(page_data.theme.as_str()) {
-            if !Path::new(DATA_PATH).join("blog_images").join(page_data.theme.clone()).exists() {
-                create_dir(Path::new(DATA_PATH).join("blog_images").join(page_data.theme.clone()).as_path()).unwrap();
-            }
-        }
-        exist_hashset.lock().unwrap().insert(page_data.theme.clone());
-    }
-    println!("{}", page_data.article_url);
-    let mut image_count = 0;
-    let image_urls = html.select(&image_selector).enumerate()
-        .map(|(order, elm)| {
-            (
-                elm.value().attr("data-src").unwrap().to_string(),
-                Path::new(DATA_PATH).join("blog_images").join(
-                    format!("{}={}={}-{}.jpg",
-                            page_data.theme, page_data.blog_key, page_data.article_id, order)),
-                page_data.last_edit_datetime
-            )
-        }
-        ).collect::<Vec<_>>();
-    // image_count += 2;
-    // let image_url = image_elm.value().attr("data-src").unwrap().to_string();
-    // println!("{}", image_url);
-    // let clone_client = client.clone();
-    // let resp = clone_client.get(image_url).send().await.unwrap();
-    // let file_path = Path::new(DATA_PATH).join("blog_images")
-    //     .join(format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_key, page_data.article_id, order));
-    // download_file(client.clone(), file_path, page_data.last_edit_datetime, image_url).await;
-    // tokio::fs::File::create(file_path.as_path()).await.unwrap().write_all(resp.bytes().await.unwrap().as_ref()).await.unwrap();
-    // set_file_times(file_path, FileTime::now(), FileTime::from(SystemTime::from(page_data.last_edit_datetime))).unwrap();
-// };
-    Ok(image_urls)
+    let dom = parse_document(RcDom::default(), Default::default()).one(entry_main["entry_text"].clone().as_str().unwrap());
+    let (text, images) = html2text(&dom.document);
+    let images = images.iter().enumerate().map(|(order, url)| (
+        url.to_owned(),
+        Path::new(DATA_PATH).join("blog_images").join(
+            format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_key, page_data.article_id, order)),
+        page_data.last_edit_datetime
+    )).collect::<Vec<_>>();
+    Ok((page_data, text, images))
 }
 
 async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedOffset>, url: String) {
@@ -229,6 +230,20 @@ async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedO
 
 #[tokio::main]
 async fn main() {
+    SQLITE_DB.get_or_init(|| async {
+        let sqlite_path = Path::new(DATA_PATH).join("blog_text.sqlite");
+        let option = SqliteConnectOptions::new().create_if_missing(true).filename(sqlite_path);
+        let pool = Arc::new(Mutex::new(SqlitePool::connect_with(option).await.unwrap()));
+        // let mut conn = pool.lock().unwrap().acquire().await.unwrap();
+        sqlx::query("CREATE TABLE IF NOT EXISTS blog (article_id INTEGER PRIMARY KEY,blog_key TEXT,theme TEXT,title TEXT,date TEXT,article TEXT,article_cleaned TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS blog_idx ON blog(article_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
+        sqlx::query("CREATE TABLE IF NOT EXISTS manage (article_id INTEGER PRIMARY KEY,updated_datetime TEXT,image_downloaded INTEGER,comment_downloaded INTEGER);").execute(pool.lock().unwrap().deref()).await.unwrap();
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS manage_idx ON manage(article_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
+        sqlx::query("CREATE TABLE IF NOT EXISTS comment (comment_id INTEGER PRIMARY KEY,blog_id INTEGER,user_id TEXT,nickname TEXT,title TEXT,date TEXT,article TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS comment_idx ON comment (comment_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
+        pool
+    }).await;
+
     let blog_names_file: PathBuf = Path::new(&current_dir().unwrap()).join("blog_names.txt");
 
     let blog_list = BufReader::new(File::open(blog_names_file).unwrap()).lines().map(
@@ -243,32 +258,46 @@ async fn main() {
         ))
     })).await.into_iter().map(|x| x.unwrap().unwrap()).collect::<HashMap<_, _>>();
 
+    let exists: Arc<HashMap<_, _>> = Arc::new(sqlx::query_as("SELECT article_id,date FROM blog;")
+        .fetch_all(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap().iter()
+        .map(|(a, b): &(i64, String)| (*a, DateTime::parse_from_rfc3339(b.deref()).unwrap())).collect());
+    // println!("{:?}", exists);
+
     let all_pages = join_all(page_counts.into_iter().map(|(blog_key, count)| {
         (0..=count).map(move |x| (blog_key.clone(), x))
     }).flatten().map(|(blog_key, page_num)| {
+        let exists = Arc::clone(&exists);
         spawn(parse_list_page(
             reqwest_client.clone(),
             blog_key,
             page_num,
+            exists,
         ))
     })).await.into_iter().filter_map(|x| x.unwrap().ok()).flatten();
 
-    SQLITE_DB.get_or_init(|| async {
-        let sqlite_path = Path::new(DATA_PATH).join("blog_text.sqlite");
-        let option = SqliteConnectOptions::new().create_if_missing(true).filename(sqlite_path);
-        let pool = Arc::new(Mutex::new(SqlitePool::connect_with(option).await.unwrap()));
-        // let mut conn = pool.lock().unwrap().acquire().await.unwrap();
-        sqlx::query("CREATE TABLE IF NOT EXISTS blog (article_id INTEGER PRIMARY KEY,blog_key TEXT,theme TEXT,title TEXT,date TEXT,article TEXT,article_cleaned TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
-        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS blog_idx ON blog(article_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
-        sqlx::query("CREATE TABLE IF NOT EXISTS comment (comment_id INTEGER PRIMARY KEY,blog_id INTEGER,user_id TEXT,nickname TEXT,title TEXT,date TEXT,article TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
-        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS comment_idx ON comment (comment_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
-        pool
-    }).await;
-    // println!("{}", all_pages.count());
-    let count = join_all(all_pages.map(|x| {
-        spawn(
+
+    let mut trans = SQLITE_DB.get().unwrap().lock().unwrap().deref().begin().await.unwrap();
+
+    for (page_data, main_text, _) in join_all(all_pages.map(|x| {
+        let a = spawn(
             parse_article_page(reqwest_client.clone(), x)
-        )
-    })).await.into_iter().filter_map(|x| x.unwrap().ok()).flatten().collect::<Vec<_>>();
+        );
+        a
+    })).await.into_iter().filter_map(|x| {
+        x.unwrap().ok()
+    }) {
+        sqlx::query("INSERT OR IGNORE INTO blog VALUES(?, ?, ?, ?, ?, ?, ?)")
+            .bind(page_data.article_id)
+            .bind(page_data.blog_key)
+            .bind(page_data.theme)
+            .bind(page_data.entry_title)
+            .bind(page_data.last_edit_datetime.to_rfc3339())
+            .bind(main_text)
+            .bind(None::<String>)
+            .execute(&mut *trans).await.unwrap();
+    }
+    trans.commit().await.unwrap();
+
+
     ()
 }

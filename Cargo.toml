@@ -26,9 +26,10 @@ wasm-pack = { version = "*" }
 console-subscriber = { version = "*" }
 #openssl-sys = { version = "0.9.93", features = ["vendored"] }
 web-sys = { version = "*", features = ["Crypto", "console"], default-features = true }
-scraper = { version = "*" }
+#scraper = { version = "*" }
 chrono = { version = "*", features = ["default", "serde"] }
-html5ever = { version = "*" }
+html5ever = { version = "0.27.0" }
+markup5ever_rcdom = { version = "*" }
 kdam = { version = "*" }
 filetime = { version = "*" }
 #ndarray-linalg = { version = "*", features = ["default"] }
@@ -40,3 +41,5 @@ once_cell = { version = "*" }
 anyhow = { version = "*" }
 sqlx = { version = "*", features = ["runtime-tokio-native-tls", "default", "sqlite", "chrono"] }
 dotenv = { version = "*" }
+lazy-regex = { version = "*" }
+ego-tree = { version = "*" }
