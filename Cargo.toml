@@ -43,3 +43,4 @@ sqlx = { version = "*", features = ["runtime-tokio-native-tls", "default", "sqli
 dotenv = { version = "*" }
 lazy-regex = { version = "*" }
 ego-tree = { version = "*" }
+#tqdm = { version = "*" }
