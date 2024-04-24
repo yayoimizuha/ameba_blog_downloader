@@ -44,7 +44,7 @@ dotenv = { version = "*" }
 lazy-regex = { version = "*" }
 ego-tree = { version = "*" }
 #tqdm = { version = "*" }
-gstreamer = { version = "*" }
+#gstreamer = { version = "*" }
 zune-jpeg = { version = "0.5.0-rc0" }
 [profile.dev.package.zune-jpeg]
 opt-level = 3
