@@ -204,7 +204,7 @@ fn html2text(handle: &Handle) -> (String, Vec<String>) {
                             match attr.value.to_string().as_str() {
                                 "PhotoSwipeImage" => {
                                     let image_url = attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "data-src").unwrap().value.to_string().replace("?caw=800", "?caw=1125");
-                                    if image_url.contains(".gif?caw") {
+                                    if !image_url.contains(".jpg?caw") {
                                         ("".to_string(), vec![])
                                     } else {
                                         (format!("-----image-----{}-----",

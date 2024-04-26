@@ -1,11 +1,11 @@
 use image::DynamicImage;
 use ndarray::Array4;
-use ort::{CPUExecutionProvider, CUDAExecutionProvider, DirectMLExecutionProvider, ExecutionProvider, GraphOptimizationLevel, Session, TensorRTExecutionProvider};
+use ort::{CPUExecutionProvider, CUDAExecutionProvider, DirectMLExecutionProvider, ExecutionProvider, GraphOptimizationLevel, OpenVINOExecutionProvider, Session, TensorRTExecutionProvider};
 
 
 use super::retinaface_resnet;
 use super::retinaface_mobilenet;
-use super::found_face;
+pub use super::found_face;
 
 const MOBILENET_ONNX: &str = r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader\src\retinaface\mobilenet_retinaface.onnx"#;
 const RESNET_ONNX: &str = r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader\src\retinaface\resnet_retinaface.onnx"#;
@@ -22,12 +22,14 @@ pub struct RetinaFaceFaceDetector {
 }
 
 
+
 impl RetinaFaceFaceDetector {
     pub fn new(model_kind: ModelKind) -> RetinaFaceFaceDetector {
         let execution_providers = [
-            TensorRTExecutionProvider::default().build(),
-            CUDAExecutionProvider::default().build(),
-            DirectMLExecutionProvider::default().build(),
+            OpenVINOExecutionProvider::default().with_device_type("GPU_FP16").build(),
+            // TensorRTExecutionProvider::default().build(),
+            // CUDAExecutionProvider::default().build(),
+            DirectMLExecutionProvider::default().with_device_id(0).build(),
             CPUExecutionProvider::default().build(),
         ];
         for execution_provider in &execution_providers {
@@ -40,6 +42,7 @@ impl RetinaFaceFaceDetector {
             .with_execution_providers(execution_providers).unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
             .with_intra_threads(16).unwrap();
+
         match model_kind {
             ModelKind::MobileNet => {
                 RetinaFaceFaceDetector {
@@ -55,6 +58,7 @@ impl RetinaFaceFaceDetector {
             }
         }
     }
+
     pub fn infer(&self, image: Vec<u8>) -> Vec<found_face::FoundFace> {
         match self.model {
             ModelKind::MobileNet => retinaface_mobilenet::infer(&self.session, image).unwrap(),
