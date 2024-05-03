@@ -2,33 +2,29 @@ use std::string::String;
 use std::collections::{HashMap, HashSet};
 use std::env::current_dir;
 use std::fs::{create_dir, File};
-use std::future::Future;
 use std::io::{BufRead, BufReader};
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, TryLockResult};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use chrono::{DateTime, FixedOffset, Local, SecondsFormat};
 use futures::future::join_all;
 use once_cell::sync::Lazy;
 use reqwest::Client;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use tokio::{spawn, sync};
 use tokio::sync::Semaphore;
 use anyhow::Error;
 use filetime::{FileTime, set_file_times};
-use futures::executor::block_on;
-use futures::task;
-use html5ever::{Attribute, parse_document};
+use html5ever:: parse_document;
 use html5ever::tendril::TendrilSink;
-use imageproc::drawing::draw_hollow_rect;
 use markup5ever_rcdom::{RcDom, Handle, NodeData};
-use itertools::{all, Itertools};
+use itertools::Itertools;
 use kdam::{Bar, BarExt, tqdm};
 use sqlx::{Acquire, Connection, Executor, SqlitePool};
 use sqlx::migrate::Migrate;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteQueryResult};
+use sqlx::sqlite::SqliteConnectOptions;
 use tokio::io::AsyncWriteExt;
 
 static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(200)));
@@ -134,7 +130,7 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exi
         let blog_id = article_info["blog_id"].as_i64().unwrap();
         let theme = theme_curator(article_info["theme_name"].as_str().unwrap().to_string(), &blog_key);
         create_directory_if_not_exist(&theme);
-        let article_val = article_info.to_string();
+        let _article_val = article_info.to_string();
         let entry_title = match article_info["entry_title"].as_str() {
             None => { "".to_string() }
             Some(x) => { x.to_string() }
