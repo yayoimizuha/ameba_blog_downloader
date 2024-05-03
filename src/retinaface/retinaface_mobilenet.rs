@@ -1,18 +1,23 @@
 use std::{f32};
 use std::ops::{Add, Div, Mul};
 use std::time::Instant;
+use anyhow::{anyhow, Error, Result};
 use image::DynamicImage;
 use itertools::{enumerate, iproduct, Itertools};
-use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, Ix2, s};
+use ndarray::{arr1, arr2, Array, array, Array2, Array3, Array4, Axis, concatenate, Ix1, Ix2, s};
 use ort::{inputs, Session, Value};
-
+use zune_image::codecs::qoi::zune_core::options::DecoderOptions;
+use zune_image::image::Image;
+// use zune_jpeg::JpegDecoder;
+// use zune_jpeg::zune_core::bytestream::ZCursor;
+// use zune_image::image::Image;
 
 use super::found_face::FoundFace;
 
 // const ONNX_PATH: &str = r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader\src\bin\mobilenet_retinaface.onnx"#;
 
 
-pub fn transform(image: DynamicImage/*, _max_size: usize*/) -> Array4<f32> {
+pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     // let resized_image = if max_size < image.width() as usize || max_size < image.height() as usize {
     //     // image.resize(max_size as u32, max_size as u32, FilterType::Triangle)
     //     image
@@ -21,16 +26,38 @@ pub fn transform(image: DynamicImage/*, _max_size: usize*/) -> Array4<f32> {
     //     image
     // };
     // // resized_image.save("prepare.jpg").unwrap();
-    let mut output_image = Array4::zeros((1usize, 3usize, image.height() as usize, image.width() as usize));
-    output_image.fill(0.);
-
-    for (x, y, pixel) in image.into_rgb32f().enumerate_pixels() {
-        let [r, g, b] = pixel.0; // Normalize
-        output_image[[0usize, 0, y as usize, x as usize]] = r;
-        output_image[[0usize, 1, y as usize, x as usize]] = g;
-        output_image[[0usize, 2, y as usize, x as usize]] = b;
-    }
-    output_image
+    let mut decoder = Image::read(&image, DecoderOptions::default()).unwrap();
+    let (width, height) =decoder.dimensions();
+    // let (width, height) = match decoder.dimensions() {
+    //     None => { return Err(anyhow!("dimension error")); }
+    //     Some(x) => { x }
+    // };
+    // NCHW
+    let decode_vec = &decoder.flatten_to_u8()[0];
+    let mut output_image = Array4::from_shape_fn((1, 3, height, width),
+                                                 |(n, c, h, w)| {
+                                                     let order = n * (height * width * 3) + h * (width * 3) + w * (3) + c;
+                                                     if order >= width * height * 3 { 0.0 } else { decode_vec[order] as f32 / 255.0 }
+                                                 });
+    // let mut output_image = Array3::from_shape_vec((height, width, 3), decoder.decode().unwrap()).unwrap();
+    // let output_image = output_image.permuted_axes([2, 0, 1]).into_shape((1, 3, height, width)).unwrap().mapv(|val| val as f32 / 255.0);
+    // let output_image =Array4::zeros((1,3,width,height));
+    // output_image.fill(0.);
+    // decoder.decode().unwrap().iter().enumerate().for_each(
+    //     |(order, val)| {
+    //         let width = order % (size.0 * 3);
+    //         let height = order / (size.1 * 3);
+    //         let color = order % 3;
+    //         output_image[[0, color, height, width]] = *val as f32 / 255.0;
+    //     }
+    // );
+    // for (x, y, pixel) in image.into_rgb32f().enumerate_pixels() {
+    //     let [r, g, b] = pixel.0; // Normalize
+    //     output_image[[0usize, 0, y as usize, x as usize]] = r;
+    //     output_image[[0usize, 1, y as usize, x as usize]] = g;
+    //     output_image[[0usize, 2, y as usize, x as usize]] = b;
+    // }
+    Ok(output_image)
 }
 
 
@@ -129,7 +156,7 @@ fn nms_impl(boxes: Array<f32, Ix2>, scores: Array<f32, Ix1>, nms_threshold: f32)
 }
 
 
-pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>, String> {
+pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>> {
     const _MAX_SIZE: usize = 640;
 
     let confidence_threshold = 0.02;
@@ -139,15 +166,18 @@ pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>, 
     let top_k = 5000;
     let variance = [0.1, 0.2];
 
-    let image;
-    match image::load_from_memory(image_bytes.as_slice()) {
-        Ok(i) => { image = i }
-        Err(err) => {
-            eprintln!("Error while loading image: {}", err);
-            return Err(err.to_string());
-        }
-    };
-    let raw_image = transform(image);
+    // let image;
+    //
+    // let mut decoder =JpegDecoder::new(&image_bytes);
+    // let size = decoder.dimensions().unwrap();
+    // match decoder.decode() {
+    //     Ok(i) => { image = i }
+    //     Err(err) => {
+    //         eprintln!("Error while loading image: {}", err);
+    //         return Err(err.to_string());
+    //     }
+    // };
+    let raw_image = transform(image_bytes)?;
     println!("{:?}", raw_image.dim());
 
     let binding = raw_image.to_owned();
@@ -161,7 +191,7 @@ pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>, 
     let model_res = session.run(onnx_input).unwrap();
     println!("ONNX Inference time: {:?}", now.elapsed());
 
-    let extract = |tensor: &Value| tensor.extract_tensor::<f32>().unwrap().view().to_owned();
+    let extract = |tensor: &Value| tensor.try_extract_tensor::<f32>().unwrap().view().to_owned();
     let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract(model_res.get(label).unwrap()));
 
     let scale_landmarks = concatenate(Axis(0), &*vec![transformed_size.view(); 5]).unwrap().mapv(|x| x as f32);

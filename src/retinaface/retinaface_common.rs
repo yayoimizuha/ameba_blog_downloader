@@ -1,6 +1,7 @@
+use anyhow::Error;
 use image::DynamicImage;
 use ndarray::Array4;
-use ort::{CPUExecutionProvider, CUDAExecutionProvider, DirectMLExecutionProvider, ExecutionProvider, GraphOptimizationLevel, OpenVINOExecutionProvider, Session, TensorRTExecutionProvider};
+use ort::{CPUExecutionProvider, CUDAExecutionProvider, DirectMLExecutionProvider, ExecutionProvider, GraphOptimizationLevel, OneDNNExecutionProvider, OpenVINOExecutionProvider, Session, TensorRTExecutionProvider};
 
 
 use super::retinaface_resnet;
@@ -22,14 +23,15 @@ pub struct RetinaFaceFaceDetector {
 }
 
 
-
 impl RetinaFaceFaceDetector {
     pub fn new(model_kind: ModelKind) -> RetinaFaceFaceDetector {
+        // ort::init_from(r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader\onnxruntime-win-x64-gpu-1.17.3\lib\onnxruntime.dll"#).commit().unwrap();
         let execution_providers = [
-            OpenVINOExecutionProvider::default().with_device_type("GPU_FP16").build(),
-            // TensorRTExecutionProvider::default().build(),
-            // CUDAExecutionProvider::default().build(),
-            DirectMLExecutionProvider::default().with_device_id(0).build(),
+            // OpenVINOExecutionProvider::default().build(),
+            // OneDNNExecutionProvider::default().build(),
+            TensorRTExecutionProvider::default().build(),
+            CUDAExecutionProvider::default().build(),
+            DirectMLExecutionProvider::default()    .build(),
             CPUExecutionProvider::default().build(),
         ];
         for execution_provider in &execution_providers {
@@ -46,13 +48,13 @@ impl RetinaFaceFaceDetector {
         match model_kind {
             ModelKind::MobileNet => {
                 RetinaFaceFaceDetector {
-                    session: session_builder.with_model_from_file(MOBILENET_ONNX).unwrap(),
+                    session: session_builder.commit_from_file(MOBILENET_ONNX).unwrap(),
                     model: model_kind,
                 }
             }
             ModelKind::ResNet => {
                 RetinaFaceFaceDetector {
-                    session: session_builder.with_model_from_file(RESNET_ONNX).unwrap(),
+                    session: session_builder.commit_from_file(RESNET_ONNX).unwrap(),
                     model: model_kind,
                 }
             }
@@ -66,7 +68,7 @@ impl RetinaFaceFaceDetector {
         }
     }
 
-    pub fn image_to_array(&self, image: DynamicImage) -> Array4<f32> {
+    pub fn image_to_array(&self, image: Vec<u8>) -> Result<Array4<f32>, Error> {
         match self.model {
             ModelKind::MobileNet => retinaface_mobilenet::transform(image),
             ModelKind::ResNet => retinaface_resnet::transform(image)

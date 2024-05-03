@@ -6,8 +6,8 @@ use futures::future::join_all;
 use once_cell::sync::Lazy;
 use tokio::{fs, sync};
 use tokio::sync::Semaphore;
-use zune_jpeg::JpegDecoder;
-use zune_jpeg::zune_core::bytestream::ZCursor;
+// use zune_jpeg::JpegDecoder;
+// use zune_jpeg::zune_core::bytestream::ZCursor;
 use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
 use ameba_blog_downloader::retinaface::found_face::FoundFace;
 use rand::random;
@@ -37,6 +37,7 @@ async fn decode(path: PathBuf) -> Option<Vec<FoundFace>> {
     }
     let predictor_vec = Arc::clone(&PREDICTORS.get().unwrap());
     let a = &predictor_vec[random::<usize>() % 6].lock().unwrap();
+    println!("{:?}", path);
     Some(a.infer(file_content))
     // exit(0);
     // let mut decoder = JpegDecoder::new(ZCursor::new(&file_content));
