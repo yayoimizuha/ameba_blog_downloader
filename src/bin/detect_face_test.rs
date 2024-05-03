@@ -10,15 +10,13 @@ use tokio::sync::Semaphore;
 // use zune_jpeg::zune_core::bytestream::ZCursor;
 use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
 use ameba_blog_downloader::retinaface::found_face::FoundFace;
+use ameba_blog_downloader::data_dir;
 use rand::random;
 
 const DATA_PATH: Lazy<PathBuf> = Lazy::new(|| {
-    match env::var("DATA_PATH") {
-        Ok(str) => { PathBuf::from(str) }
-        Err(_) => { PathBuf::from(r#"D:\helloproject-ai-data"#) }
-    }
+    data_dir()
 });
-static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(200)));
+static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(1)));
 static PREDICTORS: sync::OnceCell<Arc<Vec<Mutex<RetinaFaceFaceDetector>>>> = sync::OnceCell::const_new();
 
 async fn decode(path: PathBuf) -> Option<Vec<FoundFace>> {
@@ -35,10 +33,12 @@ async fn decode(path: PathBuf) -> Option<Vec<FoundFace>> {
         fs::remove_file(path).await.unwrap();
         return None;
     }
-    let predictor_vec = Arc::clone(&PREDICTORS.get().unwrap());
-    let a = &predictor_vec[random::<usize>() % 6].lock().unwrap();
-    println!("{:?}", path);
-    Some(a.infer(file_content))
+    {
+        let predictor_vec = Arc::clone(&PREDICTORS.get().unwrap());
+        let a = &predictor_vec[random::<usize>() % 6].lock().unwrap();
+        println!("{:?}", path);
+        Some(a.infer(file_content))
+    }
     // exit(0);
     // let mut decoder = JpegDecoder::new(ZCursor::new(&file_content));
     // let dec_res = match decoder.decode() {

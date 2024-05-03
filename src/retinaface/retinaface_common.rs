@@ -1,15 +1,18 @@
+use std::path::PathBuf;
 use anyhow::Error;
 use ndarray::Array4;
+use once_cell::sync::Lazy;
 #[allow(unused_imports)]
 use ort::{CPUExecutionProvider, CUDAExecutionProvider, DirectMLExecutionProvider, ExecutionProvider, GraphOptimizationLevel, OneDNNExecutionProvider, OpenVINOExecutionProvider, Session, TensorRTExecutionProvider};
+use crate::project_dir;
 
 
 use super::retinaface_resnet;
 use super::retinaface_mobilenet;
 pub use super::found_face;
 
-const MOBILENET_ONNX: &str = r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader\src\retinaface\mobilenet_retinaface.onnx"#;
-const RESNET_ONNX: &str = r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader\src\retinaface\resnet_retinaface.onnx"#;
+const MOBILENET_ONNX:  Lazy<PathBuf> = Lazy::new(|| project_dir().join("src").join("retinaface").join("mobilenet_retinaface.onnx"));
+const RESNET_ONNX: Lazy<PathBuf> = Lazy::new(|| project_dir().join("src").join("retinaface").join("resnet_retinaface.onnx"));
 
 
 pub enum ModelKind {
@@ -31,7 +34,7 @@ impl RetinaFaceFaceDetector {
             // OneDNNExecutionProvider::default().build(),
             TensorRTExecutionProvider::default().build(),
             CUDAExecutionProvider::default().build(),
-            DirectMLExecutionProvider::default()    .build(),
+            DirectMLExecutionProvider::default().build(),
             CPUExecutionProvider::default().build(),
         ];
         for execution_provider in &execution_providers {
@@ -48,13 +51,13 @@ impl RetinaFaceFaceDetector {
         match model_kind {
             ModelKind::MobileNet => {
                 RetinaFaceFaceDetector {
-                    session: session_builder.commit_from_file(MOBILENET_ONNX).unwrap(),
+                    session: session_builder.commit_from_file(MOBILENET_ONNX.as_path()).unwrap(),
                     model: model_kind,
                 }
             }
             ModelKind::ResNet => {
                 RetinaFaceFaceDetector {
-                    session: session_builder.commit_from_file(RESNET_ONNX).unwrap(),
+                    session: session_builder.commit_from_file(RESNET_ONNX.as_path()).unwrap(),
                     model: model_kind,
                 }
             }
