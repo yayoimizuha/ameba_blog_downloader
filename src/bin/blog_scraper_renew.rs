@@ -22,6 +22,7 @@ use futures::executor::block_on;
 use futures::task;
 use html5ever::{Attribute, parse_document};
 use html5ever::tendril::TendrilSink;
+use imageproc::drawing::draw_hollow_rect;
 use markup5ever_rcdom::{RcDom, Handle, NodeData};
 use itertools::{all, Itertools};
 use kdam::{Bar, BarExt, tqdm};
@@ -68,8 +69,9 @@ async fn get_page_count(client: Client, blog_key: String) -> Option<(String, u64
     let _permit = SEMAPHORE.acquire().await.unwrap();
     match client.get(&format!("https://ameblo.jp/{blog_key}/entrylist.html")).send().await {
         Ok(resp) => {
+            let html =resp.text().await.unwrap();
             match serde_json::from_str::<Value>(
-                find_init_json(resp.text().await.unwrap()).unwrap().as_str()
+                find_init_json(html).unwrap().as_str()
             ) {
                 Ok(json) => {
                     match &json["entryState"]["blogPageMap"] {
@@ -106,8 +108,8 @@ fn create_directory_if_not_exist(theme: &String) {
 
 async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exists: Arc<HashMap<i64, DateTime<FixedOffset>>>, progress: Arc<Mutex<Bar>>) -> Result<Vec<PageData>, Error> {
     let _permit = SEMAPHORE.acquire().await.unwrap();
-    let entry_list_url = &format!("https://ameblo.jp/{blog_key}/entrylist-{page_number}.html");
-    let resp = client.get(entry_list_url).send().await?.text().await.unwrap();
+    let entry_list_url = format!("https://ameblo.jp/{blog_key}/entrylist-{page_number}.html");
+    let resp = client.get(&entry_list_url).send().await?.text().await.unwrap();
     let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
     progress.lock().unwrap().update(1).unwrap();
     Ok(match json["entryState"]["entryMap"].as_object() {
@@ -179,6 +181,7 @@ fn theme_curator(theme: String, blog_id: &String) -> String {
         "tokunaga-chinami-blog" => "徳永千奈美",
         "tanakareina-blog" => "田中れいな",
         "ozeki-mai-official" => "小関舞",
+        "manoerina-official" => "真野恵里菜",
         _ => theme.as_str()
     };
     if theme_val == "梁川 奈々美" {

@@ -69,6 +69,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "console-subscriber",
+ "crc32fast",
  "dotenv",
  "ego-tree",
  "filetime",

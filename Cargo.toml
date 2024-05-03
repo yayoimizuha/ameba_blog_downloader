@@ -49,6 +49,6 @@ zune-jpeg = { version = "0.5.0-rc0" }
 rand = { version = "*" }
 wgpu = { version = "*" }
 #pprof = { version = "*", features = ["default", "protobuf", "flamegraph"] }
-
+crc32fast = {version = "*   "}
 [profile.dev.package.zune-jpeg]
 opt-level = 3
