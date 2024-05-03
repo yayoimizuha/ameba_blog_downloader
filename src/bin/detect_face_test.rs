@@ -1,4 +1,3 @@
-use std::env;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
