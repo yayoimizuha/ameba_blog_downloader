@@ -1,6 +1,6 @@
 use anyhow::Error;
-use image::DynamicImage;
 use ndarray::Array4;
+#[allow(unused_imports)]
 use ort::{CPUExecutionProvider, CUDAExecutionProvider, DirectMLExecutionProvider, ExecutionProvider, GraphOptimizationLevel, OneDNNExecutionProvider, OpenVINOExecutionProvider, Session, TensorRTExecutionProvider};
 
 

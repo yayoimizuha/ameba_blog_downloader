@@ -1,10 +1,9 @@
 use std::{f32};
 use std::ops::{Add, Div, Mul};
 use std::time::Instant;
-use anyhow::{anyhow, Error, Result};
-use image::DynamicImage;
+use anyhow:: Result;
 use itertools::{enumerate, iproduct, Itertools};
-use ndarray::{arr1, arr2, Array, array, Array2, Array3, Array4, Axis, concatenate, Ix1, Ix2, s};
+use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, Ix2, s};
 use ort::{inputs, Session, Value};
 use zune_image::codecs::qoi::zune_core::options::DecoderOptions;
 use zune_image::image::Image;
