@@ -39,10 +39,10 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     //    Some(x) => { x }
     //};
 
-    let mut decoder = Image::read(&image, DecoderOptions::default()).unwrap();
+    let decoder = Image::read(&image, DecoderOptions::default()).unwrap();
     let (width, height) = decoder.dimensions();
     let decode_vec = &decoder.flatten_to_u8()[0];
-    let mut output_image = Array4::from_shape_fn((1, 3, height, width),
+    let output_image = Array4::from_shape_fn((1, 3, height, width),
                                                  |(n, c, h, w)| {
                                                      let order = n * (height * width * 3) + h * (width * 3) + w * (3) + c;
                                                      if order >= width * height * 3 { 0.0 } else {
@@ -156,8 +156,11 @@ pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>> 
     //         return Err(err.to_string());
     //     }
     // };
+    let transform_time =Instant::now();
     let raw_image = transform(image_bytes)?;
     println!("{:?}", raw_image.dim());
+    println!("Image transformation time: {:?}", transform_time.elapsed());
+
     // let dims = raw_image.shape();
     // let mut arr = vec![];
     // for i in 0..dims[0] {
@@ -181,11 +184,12 @@ pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>> 
 
     // println!("{}", raw_image);
 
-    let now = Instant::now();
+    let session_run_time = Instant::now();
     let model_res = session.run(onnx_input).unwrap();
-    println!("ONNX Inference time: {:?}", now.elapsed());
+    println!("ONNX Inference time: {:?}", session_run_time.elapsed());
 
-    let extract = |tensor: &Value| tensor.try_extract_tensor::<f32>().unwrap().view().to_owned();
+    let post_processing_time = Instant::now();
+    let extract = |tensor: &Value| tensor.extract_tensor::<f32>().unwrap().view().to_owned();
     let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract(model_res.get(label).unwrap()));
 
     let scale_landmarks = concatenate(Axis(0), &*vec![transformed_size.view(); 5]).unwrap().mapv(|x| x as f32);
@@ -227,6 +231,7 @@ pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>> 
             landmarks: <[[f32; 2]; 5]>::try_from(landmarks.slice(s![index,..]).to_vec().chunks_exact(2).map(|x| { <[f32; 2]>::try_from(x).unwrap() }).collect::<Vec<_>>()).unwrap(),
         });
     }
+    println!("Post processing time: {:?}", post_processing_time.elapsed());
 
     Ok(faces)
 }

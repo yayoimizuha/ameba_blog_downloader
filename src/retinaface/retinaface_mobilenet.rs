@@ -25,7 +25,7 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     //     image
     // };
     // // resized_image.save("prepare.jpg").unwrap();
-    let mut decoder = Image::read(&image, DecoderOptions::default()).unwrap();
+    let decoder = Image::read(&image, DecoderOptions::default()).unwrap();
     let (width, height) =decoder.dimensions();
     // let (width, height) = match decoder.dimensions() {
     //     None => { return Err(anyhow!("dimension error")); }
@@ -33,7 +33,7 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     // };
     // NCHW
     let decode_vec = &decoder.flatten_to_u8()[0];
-    let mut output_image = Array4::from_shape_fn((1, 3, height, width),
+    let output_image = Array4::from_shape_fn((1, 3, height, width),
                                                  |(n, c, h, w)| {
                                                      let order = n * (height * width * 3) + h * (width * 3) + w * (3) + c;
                                                      if order >= width * height * 3 { 0.0 } else { decode_vec[order] as f32 / 255.0 }
@@ -190,7 +190,7 @@ pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>> 
     let model_res = session.run(onnx_input).unwrap();
     println!("ONNX Inference time: {:?}", now.elapsed());
 
-    let extract = |tensor: &Value| tensor.try_extract_tensor::<f32>().unwrap().view().to_owned();
+    let extract = |tensor: &Value| tensor.extract_tensor::<f32>().unwrap().view().to_owned();
     let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract(model_res.get(label).unwrap()));
 
     let scale_landmarks = concatenate(Axis(0), &*vec![transformed_size.view(); 5]).unwrap().mapv(|x| x as f32);

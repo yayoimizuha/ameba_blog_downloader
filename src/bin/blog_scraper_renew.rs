@@ -314,8 +314,10 @@ async fn main() {
         let option = SqliteConnectOptions::new().create_if_missing(true).filename(sqlite_path);
         let pool = Arc::new(Mutex::new(SqlitePool::connect_with(option).await.unwrap()));
         // let mut conn = pool.lock().unwrap().acquire().await.unwrap();
-        sqlx::query("CREATE TABLE IF NOT EXISTS blog (article_id INTEGER PRIMARY KEY,blog_key TEXT,theme TEXT,title TEXT,date TEXT,article TEXT,article_cleaned TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
+        sqlx::query("CREATE TABLE IF NOT EXISTS blog (article_id INTEGER PRIMARY KEY,blog_key TEXT,theme TEXT,title TEXT,date TEXT,article TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
         sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS blog_idx ON blog(article_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
+        sqlx::query("CREATE TABLE IF NOT EXISTS processed_blog (article_id INTEGER PRIMARY KEY,article_cleaned TEXT,article_overview TEXT,cleaned_embedding BLOB,overview_embedding BLOB);").execute(pool.lock().unwrap().deref()).await.unwrap();
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS processed_blog_idx ON processed_blog(article_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
         sqlx::query("CREATE TABLE IF NOT EXISTS manage (article_id INTEGER PRIMARY KEY,updated_datetime TEXT,image_downloaded INTEGER,comment_downloaded INTEGER,comment_url TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
         sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS manage_idx ON manage(article_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
         sqlx::query("CREATE TABLE IF NOT EXISTS comment (comment_id INTEGER PRIMARY KEY,blog_id INTEGER,user_id TEXT,nickname TEXT,title TEXT,date TEXT,article TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
@@ -379,14 +381,13 @@ async fn main() {
         x.unwrap().ok()
     }) {
         // println!("{:?}", page_data);
-        sqlx::query("REPLACE INTO blog VALUES(?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("REPLACE INTO blog VALUES(?, ?, ?, ?, ?, ?)")
             .bind(page_data.article_id)
             .bind(page_data.blog_key)
             .bind(page_data.theme)
             .bind(page_data.entry_title)
             .bind(page_data.last_edit_datetime.to_rfc3339())
             .bind(main_text)
-            .bind(None::<String>)
             .execute(&mut *trans).await.unwrap();
         sqlx::query("INSERT OR IGNORE INTO manage VALUES(?, ?, ?, ?, ?)")
             .bind(page_data.article_id)

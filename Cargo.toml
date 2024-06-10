@@ -7,12 +7,12 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "*", features = ["full"] }
-reqwest = { version = "*", features = ["default"] }
+reqwest = { version = "*", features = ["default", "json"] }
 regex = { version = "*", features = ["default"] }
 futures = { version = "*", features = ["default"] }
 serde_json = { version = "*", features = ["default", "preserve_order"] }
 serde = { version = "*", features = ["default", "derive"] }
-ort = { version = "2.0.0-rc.2", features = ["default","tensorrt","cuda","download-binaries"] }
+ort = { version = "=2.0.0-rc.0", features = ["tensorrt", "cuda", "load-dynamic", "half"] }
 #tract-onnx = { version = "*" }
 image = { version = "*", features = ["jpeg", "png"] }
 #tracing-subscriber = { version = "*", features = ["fmt", "env-filter"] }
@@ -50,8 +50,14 @@ rand = { version = "*" }
 wgpu = { version = "*" }
 #pprof = { version = "*", features = ["default", "protobuf", "flamegraph"] }
 crc32fast = { version = "*   " }
+zerocopy = { version = "0.8.0-alpha.14" }
+gcp_access_token = { version = "*" }
+directories = { version = "*" }
+parking_lot = { version = "*" }
+
 [profile.dev.package.zune-image]
 opt-level = 3
-
+[env]
+#OPENSSL_DIR = "C:\\Users\\tomokazu\\build\\vcpkg\\packages\\openssl_x64-windows"
 #[env]
 #ORT_LIB_LOCATION = "C:\\Users\\tomokazu\\Downloads\\Microsoft.ML.OnnxRuntime.DirectML.1.17.3(1)\\runtimes\\win-x64\\native"

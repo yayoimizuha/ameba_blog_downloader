@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub mod retinaface;
 
@@ -22,7 +22,7 @@ pub fn data_dir() -> PathBuf {
 
 pub fn project_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
-        PathBuf::from(r#"D:\helloproject-ai-data"#)
+        PathBuf::from(r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader"#)
     } else if cfg!(target_os = "linux") {
         PathBuf::from(r#"/home/tomokazu/RustroverProjects/ameba_blog_downloader"#)
     } else { unreachable!() }

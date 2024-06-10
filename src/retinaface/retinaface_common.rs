@@ -46,18 +46,18 @@ impl RetinaFaceFaceDetector {
         let session_builder = Session::builder().unwrap()
             .with_execution_providers(execution_providers).unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
-            .with_intra_threads(16).unwrap();
+            .with_intra_threads(1).unwrap();
 
         match model_kind {
             ModelKind::MobileNet => {
                 RetinaFaceFaceDetector {
-                    session: session_builder.commit_from_file(MOBILENET_ONNX.as_path()).unwrap(),
+                    session: session_builder.with_model_from_file(MOBILENET_ONNX.as_path()).unwrap(),
                     model: model_kind,
                 }
             }
             ModelKind::ResNet => {
                 RetinaFaceFaceDetector {
-                    session: session_builder.commit_from_file(RESNET_ONNX.as_path()).unwrap(),
+                    session: session_builder.with_model_from_file(RESNET_ONNX.as_path()).unwrap(),
                     model: model_kind,
                 }
             }
