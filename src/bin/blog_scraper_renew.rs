@@ -5,10 +5,9 @@ use std::fs::{create_dir, File};
 use std::io::{BufRead, BufReader};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use chrono::{DateTime, FixedOffset, Local, SecondsFormat};
+use chrono::{DateTime, FixedOffset};
 use futures::future::join_all;
 use once_cell::sync::Lazy;
 use reqwest::Client;
@@ -20,10 +19,8 @@ use filetime::{FileTime, set_file_times};
 use html5ever:: parse_document;
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom::{RcDom, Handle, NodeData};
-use itertools::Itertools;
 use kdam::{Bar, BarExt, tqdm};
-use sqlx::{Acquire, Connection, Executor, SqlitePool};
-use sqlx::migrate::Migrate;
+use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use tokio::io::AsyncWriteExt;
 
@@ -363,7 +360,7 @@ async fn main() {
 
 
     let mut trans = SQLITE_DB.get().unwrap().lock().unwrap().deref().begin().await.unwrap();
-    let downloaded_time = Local::now();
+    // let downloaded_time = Local::now();
     let mut image_download_map: HashMap<i64, Vec<_>> = HashMap::new();
 
     let progress_parse_article = Arc::new(Mutex::new(tqdm!(total=all_pages.len(),desc="page parsing...",animation="ascii",force_refresh=true,leave=false)));
@@ -391,7 +388,8 @@ async fn main() {
             .execute(&mut *trans).await.unwrap();
         sqlx::query("INSERT OR IGNORE INTO manage VALUES(?, ?, ?, ?, ?)")
             .bind(page_data.article_id)
-            .bind(downloaded_time.to_rfc3339_opts(SecondsFormat::Secs, false))
+            .bind(None::<String>)
+            // .bind(downloaded_time.to_rfc3339_opts(SecondsFormat::Secs, false))
             .bind(0)
             .bind(0)
             .bind(page_data.comment_api)
