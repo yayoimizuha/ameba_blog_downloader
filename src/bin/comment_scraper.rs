@@ -69,7 +69,7 @@ struct CommentsJson {
 
 static SQLITE_DB: sync::OnceCell<Arc<Mutex<SqlitePool>>> = sync::OnceCell::const_new();
 const DATA_PATH: &str = r#"D:\helloproject-ai-data"#;
-static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(5)));
+static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(20)));
 
 async fn download_comments(client: Client, comment_url: String, article_id: i64, download_progress: Arc<Mutex<Bar>>) {
     let _permit = SEMAPHORE.acquire().await.unwrap();
@@ -92,7 +92,11 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
             return;
         }
     };
-    let mut trans = block_on(SQLITE_DB.get().unwrap().lock().unwrap().deref().begin()).unwrap();
+    let mut trans;
+    {
+        let sqlite_db = SQLITE_DB.get().unwrap().lock().unwrap();
+        trans = block_on(sqlite_db.deref().begin()).unwrap();
+    }
     let main_query = client.get(comment_url.replace("limit=1", format!("limit={}", head_json.paging.total_count).as_str()))
         .send().await.unwrap().text().await.unwrap();
 
@@ -129,7 +133,7 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
         .bind(article_id).execute(&mut *trans).await.unwrap();
     trans.commit().await.unwrap();
     download_progress.lock().unwrap().update(1).unwrap();
-    let wait = func_start + Duration::from_millis(45 * 1000 + random::<u64>() % (1000 * 30));
+    let wait = func_start + Duration::from_millis(5 * 1000 + random::<u64>() % (1000 * 1));
     while Instant::now() < wait {
         sleep(Duration::from_millis(100)).await;
         if download_progress.lock().unwrap().completed() { return; }
@@ -165,7 +169,7 @@ async fn main() {
             Some(x)
         }
     }).collect::<Vec<_>>();
-    let mut download_progress = Arc::new(Mutex::new(tqdm!(total=download_urls.len(),desc="comment downloading...",animation="ascii",force_refresh=true,leave=false)));
+    let download_progress = Arc::new(Mutex::new(tqdm!(total=download_urls.len(),desc="comment downloading...",animation="ascii",force_refresh=true,leave=false)));
     // for (article_id, _, _, comment_url, _) in download_urls {
     //     println!("{}", comment_url);
     // let cloned_progress = Arc::new(&download_progress);
