@@ -2,14 +2,22 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use chrono::{DateTime, FixedOffset, Local};
-use kdam::{BarExt, tqdm};
+use futures::executor::block_on;
+use futures::future::join_all;
+use kdam::{Bar, BarExt, tqdm};
+use once_cell::sync::Lazy;
+use rand::random;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 use tokio::sync;
+use tokio::sync::Semaphore;
+use tokio::time::sleep;
+
 
 #[derive(Serialize, Deserialize, Debug)]
 struct CommentAuthor {
@@ -61,6 +69,72 @@ struct CommentsJson {
 
 static SQLITE_DB: sync::OnceCell<Arc<Mutex<SqlitePool>>> = sync::OnceCell::const_new();
 const DATA_PATH: &str = r#"D:\helloproject-ai-data"#;
+static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(5)));
+
+async fn download_comments(client: Client, comment_url: String, article_id: i64, download_progress: Arc<Mutex<Bar>>) {
+    let _permit = SEMAPHORE.acquire().await.unwrap();
+    let func_start = Instant::now();
+    let head = client.get(&comment_url).send().await.unwrap().text().await.unwrap();
+    match serde_json::from_str::<Value>(head.as_str()).unwrap().get("commentMap") {
+        None => {
+            eprintln!("no data at {comment_url}");
+            download_progress.lock().unwrap().update(1).unwrap();
+            return;
+        }
+        Some(_) => {}
+    }
+    let head_json = match serde_json::from_str::<CommentsJson>(head.as_str()) {
+        Ok(x) => { x }
+        Err(err) => {
+            eprintln!("{} at {}", err, comment_url);
+            // eprintln!("{}", head);
+            download_progress.lock().unwrap().update(1).unwrap();
+            return;
+        }
+    };
+    let mut trans = block_on(SQLITE_DB.get().unwrap().lock().unwrap().deref().begin()).unwrap();
+    let main_query = client.get(comment_url.replace("limit=1", format!("limit={}", head_json.paging.total_count).as_str()))
+        .send().await.unwrap().text().await.unwrap();
+
+    let main_query_json = match serde_json::from_str::<CommentsJson>(main_query.as_str()) {
+        Ok(x) => { x }
+        Err(err) => {
+            eprintln!("{} at {}", err, comment_url);
+            // eprintln!("{}", main_query);
+            download_progress.lock().unwrap().update(1).unwrap();
+            return;
+        }
+    };
+    for (comment_id, comment_element) in main_query_json.comment_map {
+        // println!("{:?}", comment_element);
+        let (user_id, nickname) = {
+            match comment_element.comment_author {
+                None => { (None::<i64>, Some(comment_element.comment_name)) }
+                Some(x) => { (Some(x.blog_id), Some(x.nickname)) }
+            }
+        };
+        sqlx::query("REPLACE INTO comment VALUES(?,?,?,?,?,?,?);")
+            .bind(comment_id)
+            .bind(comment_element.blog_id)
+            .bind(user_id)
+            .bind(nickname.unwrap())
+            .bind(comment_element.comment_title)
+            .bind(comment_element.upd_datetime)
+            .bind(comment_element.comment_text)
+            .execute(&mut *trans).await.unwrap();
+    }
+    sqlx::query("UPDATE manage SET comment_downloaded = ?,updated_datetime = ? WHERE article_id = ?;")
+        .bind(true)
+        .bind(Local::now().fixed_offset())
+        .bind(article_id).execute(&mut *trans).await.unwrap();
+    trans.commit().await.unwrap();
+    download_progress.lock().unwrap().update(1).unwrap();
+    let wait = func_start + Duration::from_millis(45 * 1000 + random::<u64>() % (1000 * 30));
+    while Instant::now() < wait {
+        sleep(Duration::from_millis(100)).await;
+        if download_progress.lock().unwrap().completed() { return; }
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -91,64 +165,15 @@ async fn main() {
             Some(x)
         }
     }).collect::<Vec<_>>();
-    let mut download_progress = tqdm!(total=download_urls.len(),desc="comment downloading...",animation="ascii",force_refresh=true,leave=false);
-    for (article_id, _, _, comment_url, _) in download_urls {
-        // println!("{}", comment_url);
-        let head = client.get(&comment_url).send().await.unwrap().text().await.unwrap();
-        match serde_json::from_str::<Value>(head.as_str()).unwrap().get("commentMap") {
-            None => {
-                eprintln!("no data at {comment_url}");
-                download_progress.update(1).unwrap();
-                continue;
-            }
-            Some(_) => {}
-        }
-        let head_json = match serde_json::from_str::<CommentsJson>(head.as_str()) {
-            Ok(x) => { x }
-            Err(err) => {
-                eprintln!("{} at {}", err, comment_url);
-                // eprintln!("{}", head);
-                download_progress.update(1).unwrap();
-                continue;
-            }
-        };
-        let mut trans = SQLITE_DB.get().unwrap().lock().unwrap().deref().begin().await.unwrap();
-        let main_query = client.get(comment_url.replace("limit=1", format!("limit={}", head_json.paging.total_count).as_str()))
-            .send().await.unwrap().text().await.unwrap();
-
-        let main_query_json = match serde_json::from_str::<CommentsJson>(main_query.as_str()) {
-            Ok(x) => { x }
-            Err(err) => {
-                eprintln!("{} at {}", err, comment_url);
-                // eprintln!("{}", main_query);
-                download_progress.update(1).unwrap();
-                continue;
-            }
-        };
-        for (comment_id, comment_element) in main_query_json.comment_map {
-            // println!("{:?}", comment_element);
-            let (user_id, nickname) = {
-                match comment_element.comment_author {
-                    None => { (None::<i64>, Some(comment_element.comment_name)) }
-                    Some(x) => { (Some(x.blog_id), Some(x.nickname)) }
-                }
-            };
-            sqlx::query("REPLACE INTO comment VALUES(?,?,?,?,?,?,?);")
-                .bind(comment_id)
-                .bind(comment_element.blog_id)
-                .bind(user_id)
-                .bind(nickname.unwrap())
-                .bind(comment_element.comment_title)
-                .bind(comment_element.upd_datetime)
-                .bind(comment_element.comment_text)
-                .execute(&mut *trans).await.unwrap();
-        }
-        sqlx::query("UPDATE manage SET comment_downloaded = ?,updated_datetime = ? WHERE article_id = ?;")
-            .bind(true)
-            .bind(Local::now().fixed_offset())
-            .bind(article_id).execute(&mut *trans).await.unwrap();
-        trans.commit().await.unwrap();
-        download_progress.update(1).unwrap();
-    };
+    let mut download_progress = Arc::new(Mutex::new(tqdm!(total=download_urls.len(),desc="comment downloading...",animation="ascii",force_refresh=true,leave=false)));
+    // for (article_id, _, _, comment_url, _) in download_urls {
+    //     println!("{}", comment_url);
+    // let cloned_progress = Arc::new(&download_progress);
+    //
+    // };
+    join_all(download_urls.into_iter().map(|(article_id, _, _, comment_url, _)| {
+        let cloned_progress = Arc::clone(&download_progress);
+        tokio::spawn(download_comments(client.clone(), comment_url, article_id, cloned_progress))
+    })).await;
     ()
 }
