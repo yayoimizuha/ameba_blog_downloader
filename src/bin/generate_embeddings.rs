@@ -1,9 +1,12 @@
+use std::env;
 use std::ops::Deref;
 use std::path::Path;
+use std::string::ToString;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use futures::future::join_all;
 use gcp_access_token::json;
+use itertools::Itertools;
 use kdam::{Bar, BarExt, tqdm};
 use once_cell::sync::Lazy;
 use rand::random;
@@ -123,7 +126,7 @@ async fn get_embedding(article: String, column: String, article_id: i64, client:
     ()
 }
 
-static TARGET: &str = "overview";
+static TARGET: Lazy<String> = Lazy::new(|| env::args().collect::<Vec<_>>().get(1).expect("Please set \"cleaned\" or \"overview\" for the argument.").to_string());
 
 #[tokio::main]
 async fn main() {
@@ -134,7 +137,7 @@ async fn main() {
     }).await;
     update_bearer().await;
 
-    let articles = sqlx::query_as(format!("SELECT article_id,article_{TARGET} FROM processed_blog WHERE article_{TARGET} IS NOT NULL AND {TARGET}_embedding IS NULL;").as_str())
+    let articles = sqlx::query_as(format!("SELECT article_id,article_{} FROM processed_blog WHERE article_{} IS NOT NULL AND {}_embedding IS NULL;", TARGET.as_str(), TARGET.as_str(), TARGET.as_str()).as_str())
         .fetch_all(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap().iter().map(|(id, text): &(i64, String)| (*id, text.clone())).collect::<Vec<_>>();
     let mut joins = vec![];
     let client = reqwest::Client::new();
@@ -143,7 +146,7 @@ async fn main() {
 
     for (article_id, article) in articles {
         let progress_clone = Arc::clone(&progress);
-        joins.push(tokio::spawn(get_embedding(article, format!("{TARGET}_embedding"), article_id, client.clone(), progress_clone)));
+        joins.push(tokio::spawn(get_embedding(article, format!("{}_embedding", TARGET.as_str()), article_id, client.clone(), progress_clone)));
     }
     join_all(joins).await.into_iter();
 }

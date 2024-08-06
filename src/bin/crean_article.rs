@@ -2,9 +2,9 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use crc32fast::hash;
-use futures::future::join_all;
 use itertools::Itertools;
 use ndarray::{Array, Axis, Zip};
+use rayon::prelude::*;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 use tokio::sync;
@@ -12,7 +12,7 @@ use tokio::sync;
 static SQLITE_DB: sync::OnceCell<Arc<Mutex<SqlitePool>>> = sync::OnceCell::const_new();
 const DATA_PATH: &str = r#"D:\helloproject-ai-data"#;
 
-async fn article_cleaner(a: (i64, String), b: (i64, String)) -> Option<(i64, String)> {
+fn article_cleaner(a: (i64, String), b: (i64, String)) -> Option<(i64, String)> {
     let decrease_new_line = lazy_regex::regex!("(?m)\n{2,}");
     let a_text = decrease_new_line.replace_all(a.1.as_str(), "\n\n").into_owned();
     let b_text = decrease_new_line.replace_all(b.1.as_str(), "\n\n").into_owned();
@@ -54,10 +54,10 @@ async fn main() {
         println!("{} {}", theme, articles.len());
         let mut trans = SQLITE_DB.get().unwrap().lock().unwrap().deref().begin().await.unwrap();
         // let last = articles[articles.len() - 2..].to_vec();
-        for res in join_all(articles.into_iter().tuple_windows().map(|(a, b)| {
-            tokio::spawn(article_cleaner(a, b))
-        }).collect::<Vec<_>>()).await {
-            let (id, text) = match res.unwrap() {
+        for res in articles.into_iter().tuple_windows().collect::<Vec<_>>().into_par_iter().map(|(a, b)| {
+            article_cleaner(a, b)
+        }).collect::<Vec<_>>() {
+            let (id, text) = match res {
                 None => { continue; }
                 Some(x) => x
             };
@@ -71,4 +71,5 @@ async fn main() {
         //     .bind(last_res.0).bind(last_res.1).execute(&mut *trans).await.unwrap();
         trans.commit().await.unwrap();
     }
+    sqlx::query("DELETE FROM processed_blog WHERE article_cleaned = '';").execute(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap();
 }

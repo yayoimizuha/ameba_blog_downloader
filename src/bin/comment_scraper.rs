@@ -77,7 +77,7 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
     let head = client.get(&comment_url).send().await.unwrap().text().await.unwrap();
     match serde_json::from_str::<Value>(head.as_str()).unwrap().get("commentMap") {
         None => {
-            eprintln!("no data at {comment_url}");
+            // eprintln!("no data at {comment_url}");
             download_progress.lock().unwrap().update(1).unwrap();
             return;
         }
@@ -92,11 +92,7 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
             return;
         }
     };
-    let mut trans;
-    {
-        let sqlite_db = SQLITE_DB.get().unwrap().lock().unwrap();
-        trans = block_on(sqlite_db.deref().begin()).unwrap();
-    }
+
     let main_query = client.get(comment_url.replace("limit=1", format!("limit={}", head_json.paging.total_count).as_str()))
         .send().await.unwrap().text().await.unwrap();
 
@@ -109,29 +105,34 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
             return;
         }
     };
-    for (comment_id, comment_element) in main_query_json.comment_map {
-        // println!("{:?}", comment_element);
-        let (user_id, nickname) = {
-            match comment_element.comment_author {
-                None => { (None::<i64>, Some(comment_element.comment_name)) }
-                Some(x) => { (Some(x.blog_id), Some(x.nickname)) }
-            }
-        };
-        sqlx::query("REPLACE INTO comment VALUES(?,?,?,?,?,?,?);")
-            .bind(comment_id)
-            .bind(comment_element.blog_id)
-            .bind(user_id)
-            .bind(nickname.unwrap())
-            .bind(comment_element.comment_title)
-            .bind(comment_element.upd_datetime)
-            .bind(comment_element.comment_text)
-            .execute(&mut *trans).await.unwrap();
+    {
+        let sqlite_db = SQLITE_DB.get().unwrap().lock().unwrap();
+        let mut trans = block_on(sqlite_db.deref().begin()).unwrap();
+
+        for (comment_id, comment_element) in main_query_json.comment_map {
+            // println!("{:?}", comment_element);
+            let (user_id, nickname) = {
+                match comment_element.comment_author {
+                    None => { (None::<i64>, Some(comment_element.comment_name)) }
+                    Some(x) => { (Some(x.blog_id), Some(x.nickname)) }
+                }
+            };
+            block_on(sqlx::query("REPLACE INTO comment VALUES(?,?,?,?,?,?,?);")
+                .bind(comment_id)
+                .bind(comment_element.blog_id)
+                .bind(user_id)
+                .bind(nickname.unwrap())
+                .bind(comment_element.comment_title)
+                .bind(comment_element.upd_datetime)
+                .bind(comment_element.comment_text)
+                .execute(&mut *trans)).unwrap();
+        }
+        block_on(sqlx::query("UPDATE manage SET comment_downloaded = ?,updated_datetime = ? WHERE article_id = ?;")
+            .bind(true)
+            .bind(Local::now().fixed_offset())
+            .bind(article_id).execute(&mut *trans)).unwrap();
+        block_on(trans.commit()).unwrap();
     }
-    sqlx::query("UPDATE manage SET comment_downloaded = ?,updated_datetime = ? WHERE article_id = ?;")
-        .bind(true)
-        .bind(Local::now().fixed_offset())
-        .bind(article_id).execute(&mut *trans).await.unwrap();
-    trans.commit().await.unwrap();
     download_progress.lock().unwrap().update(1).unwrap();
     let wait = func_start + Duration::from_millis(5 * 1000 + random::<u64>() % (1000 * 1));
     while Instant::now() < wait {

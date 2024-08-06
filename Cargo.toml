@@ -54,6 +54,7 @@ zerocopy = { version = "0.8.0-alpha.14" }
 gcp_access_token = { version = "*" }
 directories = { version = "*" }
 parking_lot = { version = "*" }
+rayon = { version = "*" }
 
 [profile.dev.package.zune-image]
 opt-level = 3

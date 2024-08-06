@@ -16,7 +16,7 @@ use tokio::{spawn, sync};
 use tokio::sync::Semaphore;
 use anyhow::Error;
 use filetime::{FileTime, set_file_times};
-use html5ever:: parse_document;
+use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom::{RcDom, Handle, NodeData};
 use kdam::{Bar, BarExt, tqdm};
@@ -62,7 +62,7 @@ async fn get_page_count(client: Client, blog_key: String) -> Option<(String, u64
     let _permit = SEMAPHORE.acquire().await.unwrap();
     match client.get(&format!("https://ameblo.jp/{blog_key}/entrylist.html")).send().await {
         Ok(resp) => {
-            let html =resp.text().await.unwrap();
+            let html = resp.text().await.unwrap();
             match serde_json::from_str::<Value>(
                 find_init_json(html).unwrap().as_str()
             ) {
@@ -175,6 +175,9 @@ fn theme_curator(theme: String, blog_id: &String) -> String {
         "tanakareina-blog" => "田中れいな",
         "ozeki-mai-official" => "小関舞",
         "manoerina-official" => "真野恵里菜",
+        "yamagishi-riko" => "山岸理子",
+        "yajima-maimi-official" => "矢島舞美",
+        "inaba-manaka" => "稲場愛香",
         _ => theme.as_str()
     };
     if theme_val == "梁川 奈々美" {
@@ -221,7 +224,7 @@ fn html2text(handle: &Handle) -> (String, Vec<String>) {
                                 match attr.value.to_string().as_str() {
                                     "ogpCard_link" => {
                                         return (attrs.borrow().iter().find(|attr|
-                                            attr.name.local.to_string().as_str() == "href").unwrap().value.to_string(),
+                                        attr.name.local.to_string().as_str() == "href").unwrap().value.to_string(),
                                                 vec![]);
                                     }
                                     _ => {}
@@ -416,7 +419,7 @@ async fn main() {
 
     println!("start downloading images");
     join_all(image_download_map.into_iter().map(|(article_id, images)|
-        images.into_iter().map(move |val| (article_id, val))).flatten().collect::<Vec<_>>()
+    images.into_iter().map(move |val| (article_id, val))).flatten().collect::<Vec<_>>()
         .into_iter().map(|(id, (url, path, date))| {
         let dl_counter = Arc::clone(&download_counter);
         let progress_clone = Arc::clone(&image_progress);
