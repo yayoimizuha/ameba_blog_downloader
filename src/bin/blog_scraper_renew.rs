@@ -35,7 +35,7 @@ struct PageData {
     article_url: String,
     #[allow(dead_code)]
     comment_api: String,
-    last_edit_datetime: DateTime<FixedOffset>,
+    article_datetime: DateTime<FixedOffset>,
     theme: String,
     blog_key: String,
     article_id: i64,
@@ -64,13 +64,13 @@ async fn get_page_count(client: Client, blog_key: String) -> Option<(String, u64
         Ok(resp) => {
             let html = resp.text().await.unwrap();
             match serde_json::from_str::<Value>(
-                find_init_json(html).unwrap().as_str()
+                find_init_json(html)?.as_str()
             ) {
                 Ok(json) => {
                     match &json["entryState"]["blogPageMap"] {
                         Value::Object(x) => {
                             Some((blog_key,
-                                  x.iter().next().unwrap().1["paging"]["max_page"].as_u64().unwrap()
+                                  x.iter().next()?.1["paging"]["max_page"].as_u64()?
                             ))
                         }
                         _ => unreachable!()
@@ -100,11 +100,11 @@ fn create_directory_if_not_exist(theme: &String) {
 }
 
 async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exists: Arc<HashMap<i64, DateTime<FixedOffset>>>, progress: Arc<Mutex<Bar>>) -> Result<Vec<PageData>, Error> {
-    let _permit = SEMAPHORE.acquire().await.unwrap();
+    let _permit = SEMAPHORE.acquire().await?;
     let entry_list_url = format!("https://ameblo.jp/{blog_key}/entrylist-{page_number}.html");
-    let resp = client.get(&entry_list_url).send().await?.text().await.unwrap();
+    let resp = client.get(&entry_list_url).send().await?.text().await?;
     let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
-    progress.lock().unwrap().update(1).unwrap();
+    progress.lock().unwrap().update(1)?;
     Ok(match json["entryState"]["entryMap"].as_object() {
         None => {
             println!("{}", json);
@@ -114,12 +114,12 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exi
         Some(x) => { x }
     }.into_iter().map(|(_, article_info)| {
         let entry_id = article_info["entry_id"].as_i64().unwrap();
-        let last_edit_datetime =
-            DateTime::parse_from_rfc3339(article_info["last_edit_datetime"].as_str().unwrap()).unwrap();
+        let article_datetime =
+            DateTime::parse_from_rfc3339(article_info["entry_created_datetime"].as_str().unwrap()).unwrap();
         match exists.get(&entry_id) {
             None => {}
             Some(date) => {
-                if last_edit_datetime == *date {
+                if article_datetime == *date {
                     return None;
                 };
             }
@@ -141,7 +141,7 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exi
                 Some(PageData {
                     article_url,
                     comment_api,
-                    last_edit_datetime,
+                    article_datetime,
                     theme,
                     entry_title,
                     blog_key: blog_key.clone(),
@@ -149,7 +149,9 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exi
                 })
             }
             x => {
-                eprintln!("{x} at {article_url} in {entry_list_url}");
+                if x != "amember" {
+                    eprintln!("{x} at {article_url} in {entry_list_url}");
+                }
                 None
             }
         }
@@ -259,8 +261,8 @@ fn html2text(handle: &Handle) -> (String, Vec<String>) {
 }
 
 async fn parse_article_page(client: Client, page_data: PageData, progress: Arc<Mutex<Bar>>) -> Result<(PageData, String, Vec<(String, PathBuf, DateTime<FixedOffset>)>), Error> {
-    let _permit = SEMAPHORE.acquire().await.unwrap();
-    let resp = client.get(page_data.article_url.clone()).send().await?.text().await.unwrap();
+    let _permit = SEMAPHORE.acquire().await?;
+    let resp = client.get(page_data.article_url.clone()).send().await?.text().await?;
     let json = serde_json::from_str::<Value>(find_init_json(resp).unwrap().as_str())?;
     let (_, &ref entry_main) = json["entryState"]["entryMap"].as_object().unwrap().iter().next().unwrap();
     let dom = parse_document(RcDom::default(), Default::default()).one(entry_main["entry_text"].clone().as_str().unwrap());
@@ -269,10 +271,10 @@ async fn parse_article_page(client: Client, page_data: PageData, progress: Arc<M
         url.to_owned(),
         Path::new(DATA_PATH).join("blog_images").join(page_data.theme.clone()).join(
             format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_key, page_data.article_id, order)),
-        page_data.last_edit_datetime
+        page_data.article_datetime
     )).collect::<Vec<_>>();
 
-    progress.lock().unwrap().update(1).unwrap();
+    progress.lock().unwrap().update(1)?;
 
     Ok((page_data, text, images))
 }
@@ -281,27 +283,29 @@ async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedO
     // if file_path.exists() { return; }
     let _permit = SEMAPHORE.acquire().await.unwrap();
     let resp = client.get(url).send().await.unwrap();
-    tokio::fs::File::create(file_path.as_path()).await.unwrap().write_all(resp.bytes().await.unwrap().as_ref()).await.unwrap();
-    set_file_times(file_path, FileTime::now(), FileTime::from(SystemTime::from(date))).unwrap();
-    if {
-        let mut lock = dl_manager.lock().unwrap();
-        let cnt = lock.get(&id).unwrap().clone();
-        if cnt == 1 {
-            true
-        } else {
-            lock.insert(id, cnt - 1);
-            false
-        }
-    } {
-        loop {
-            match sqlx::query("UPDATE manage SET image_downloaded=1 WHERE article_id = ?;")
-                .bind(id)
-                .execute(&(|| {
-                    SQLITE_DB.get().unwrap().lock().unwrap().clone()
-                })()).await {
-                Ok(_) => { break; }
-                Err(_) => {}
-            };
+    if resp.status().as_u16() == 200 {
+        tokio::fs::File::create(file_path.as_path()).await.unwrap().write_all(resp.bytes().await.unwrap().as_ref()).await.unwrap();
+        set_file_times(file_path, FileTime::now(), FileTime::from(SystemTime::from(date))).unwrap();
+        if {
+            let mut lock = dl_manager.lock().unwrap();
+            let cnt = lock.get(&id).unwrap().clone();
+            if cnt == 1 {
+                true
+            } else {
+                lock.insert(id, cnt - 1);
+                false
+            }
+        } {
+            loop {
+                match sqlx::query("UPDATE manage SET image_downloaded=1 WHERE article_id = ?;")
+                    .bind(id)
+                    .execute(&(|| {
+                        SQLITE_DB.get().unwrap().lock().unwrap().clone()
+                    })()).await {
+                    Ok(_) => { break; }
+                    Err(_) => {}
+                };
+            }
         }
     }
     progress.lock().unwrap().update(1).unwrap();
@@ -386,7 +390,7 @@ async fn main() {
             .bind(page_data.blog_key)
             .bind(page_data.theme)
             .bind(page_data.entry_title)
-            .bind(page_data.last_edit_datetime.to_rfc3339())
+            .bind(page_data.article_datetime.to_rfc3339())
             .bind(main_text)
             .execute(&mut *trans).await.unwrap();
         sqlx::query("INSERT OR IGNORE INTO manage VALUES(?, ?, ?, ?, ?)")

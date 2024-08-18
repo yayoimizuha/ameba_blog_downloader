@@ -20,12 +20,12 @@ image = { version = "*", features = ["jpeg", "png"] }
 ndarray = { version = "*", features = ["default", "serde", "serde-1"] }
 imageproc = { version = "*", features = ["default"] }
 #include-bytes-zstd = { version = "0.1.0" }
-wasm-bindgen = { version = "*" }
-wasm-bindgen-futures = { version = "*" }
-wasm-pack = { version = "*" }
+#wasm-bindgen = { version = "*" }
+#wasm-bindgen-futures = { version = "*" }
+#wasm-pack = { version = "*" }
 console-subscriber = { version = "*" }
 #openssl-sys = { version = "0.9.93", features = ["vendored"] }
-web-sys = { version = "*", features = ["Crypto", "console"], default-features = true }
+#web-sys = { version = "*", features = ["Crypto", "console"], default-features = true }
 #scraper = { version = "*" }
 chrono = { version = "*", features = ["default", "serde"] }
 html5ever = { version = "0.27.0" }
@@ -55,6 +55,10 @@ gcp_access_token = { version = "*" }
 directories = { version = "*" }
 parking_lot = { version = "*" }
 rayon = { version = "*" }
+
+[profile.relwithdebinfo]
+inherits = "release"
+debug = "full"
 
 [profile.dev.package.zune-image]
 opt-level = 3

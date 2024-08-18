@@ -39,7 +39,7 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     //    Some(x) => { x }
     //};
 
-    let decoder = Image::read(&image, DecoderOptions::default()).unwrap();
+    let decoder = Image::read(&image, DecoderOptions::default())?;
     let (width, height) = decoder.dimensions();
     let decode_vec = &decoder.flatten_to_u8()[0];
     let output_image = Array4::from_shape_fn((1, 3, height, width),
@@ -130,14 +130,14 @@ fn decode(loc: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) ->
 
 
 fn decode_landmark(pre: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) -> Array<f32, Ix2> {
-    return concatenate(Axis(1),
+    concatenate(Axis(1),
                        &*vec![
                            (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,..2]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
                            (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,2..4]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
                            (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,4..6]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
                            (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,6..8]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
                            (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,8..10]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
-                       ]).unwrap();
+                       ]).unwrap()
 }
 
 
@@ -179,21 +179,21 @@ pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>> 
 
     let binding = raw_image.to_owned();
     let input_shape = binding.shape();
-    let onnx_input = inputs!["input"=>raw_image.view()].unwrap();
+    let onnx_input = inputs!["input"=>raw_image.view()]?;
     let transformed_size = array![input_shape[2], input_shape[3]].to_owned();
 
     // println!("{}", raw_image);
 
     let session_run_time = Instant::now();
-    let model_res = session.run(onnx_input).unwrap();
+    let model_res = session.run(onnx_input)?;
     println!("ONNX Inference time: {:?}", session_run_time.elapsed());
 
     let post_processing_time = Instant::now();
     let extract = |tensor: &Value| tensor.extract_tensor::<f32>().unwrap().view().to_owned();
     let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract(model_res.get(label).unwrap()));
 
-    let scale_landmarks = concatenate(Axis(0), &*vec![transformed_size.view(); 5]).unwrap().mapv(|x| x as f32);
-    let scale_bboxes = concatenate(Axis(0), &*vec![transformed_size.view(); 2]).unwrap().mapv(|x| x as f32);
+    let scale_landmarks = concatenate(Axis(0), &*vec![transformed_size.view(); 5])?.mapv(|x| x as f32);
+    let scale_bboxes = concatenate(Axis(0), &*vec![transformed_size.view(); 2])?.mapv(|x| x as f32);
 
     let (prior_box, _onnx_output_width) = prior_box(
         vec![vec![16, 32], vec![64, 128], vec![256, 512]],
