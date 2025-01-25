@@ -14,7 +14,7 @@ beyooooonds-chicatetsu
 beyooooonds
 ocha-norma
 countrygirls
-risa-ogata
+# risa-ogata
 kumai-yurina-blog
 sudou-maasa-blog
 sugaya-risako-blog

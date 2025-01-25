@@ -1,31 +1,31 @@
-use std::string::String;
+use ameba_blog_downloader::data_dir;
+use anyhow::Error;
+use chrono::{DateTime, FixedOffset};
+use filetime::{set_file_times, FileTime};
+use futures::future::join_all;
+use html5ever::parse_document;
+use html5ever::tendril::TendrilSink;
+use kdam::{tqdm, Bar, BarExt};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
+use once_cell::sync::Lazy;
+use reqwest::Client;
+use serde_json::Value;
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::env::current_dir;
 use std::fs::{create_dir, File};
 use std::io::{BufRead, BufReader};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::string::String;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use chrono::{DateTime, FixedOffset};
-use futures::future::join_all;
-use once_cell::sync::Lazy;
-use reqwest::Client;
-use serde_json::Value;
-use tokio::{spawn, sync};
-use tokio::sync::Semaphore;
-use anyhow::Error;
-use filetime::{FileTime, set_file_times};
-use html5ever::parse_document;
-use html5ever::tendril::TendrilSink;
-use markup5ever_rcdom::{RcDom, Handle, NodeData};
-use kdam::{Bar, BarExt, tqdm};
-use sqlx::SqlitePool;
-use sqlx::sqlite::SqliteConnectOptions;
 use tokio::io::AsyncWriteExt;
-
+use tokio::sync::Semaphore;
+use tokio::{spawn, sync};
 static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(200)));
-const DATA_PATH: &str = r#"D:\helloproject-ai-data"#;
+const DATA_PATH: Lazy<PathBuf> = Lazy::new(|| data_dir());
 static SQLITE_DB: sync::OnceCell<Arc<Mutex<SqlitePool>>> = sync::OnceCell::const_new();
 
 static CREATED_USER_DIR: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
@@ -63,23 +63,19 @@ async fn get_page_count(client: Client, blog_key: String) -> Option<(String, u64
     match client.get(&format!("https://ameblo.jp/{blog_key}/entrylist.html")).send().await {
         Ok(resp) => {
             let html = resp.text().await.unwrap();
-            match serde_json::from_str::<Value>(
-                find_init_json(html)?.as_str()
-            ) {
-                Ok(json) => {
-                    match &json["entryState"]["blogPageMap"] {
-                        Value::Object(x) => {
-                            Some((blog_key,
-                                  x.iter().next()?.1["paging"]["max_page"].as_u64()?
-                            ))
-                        }
-                        _ => unreachable!()
-                    }
+            // println!("{:?}",serde_json::from_str::<Value>(find_init_json(html.clone())?.as_str()).unwrap()["entryState"]["blogPageMap"]);
+            // panic!();
+            let json_obj = serde_json::from_str::<Value>(find_init_json(html)?.as_str()).unwrap();
+            // println!("{:?}", &json_obj["entryState"]["blogPageMap"].as_object()?.keys().next().unwrap());
+            match &json_obj["entryState"]["blogPageMap"].as_object() {
+                None => {
+                    println!("{}", json_obj);
+                    panic!()
                 }
-                Err(_) => None
+                Some(x) => Some((blog_key, x[x.keys().next().unwrap()]["paging"]["max_page"].as_u64().unwrap())),
             }
         }
-        Err(_) => None
+        Err(_) => None,
     }
 }
 
@@ -87,13 +83,11 @@ fn create_directory_if_not_exist(theme: &String) {
     let mut unlock = CREATED_USER_DIR.lock().unwrap();
     match unlock.contains(theme) {
         true => {}
-        false => {
-            match Path::new(DATA_PATH).join("blog_images").join(&theme).exists() {
-                true => {}
-                false => {
-                    create_dir(Path::new(DATA_PATH).join("blog_images").join(&theme)).unwrap();
-                    unlock.insert(theme.clone());
-                }
+        false => match DATA_PATH.join("blog_images").join(&theme).exists() {
+            true => {}
+            false => {
+                create_dir(DATA_PATH.join("blog_images").join(&theme)).unwrap();
+                unlock.insert(theme.clone());
             }
         }
     }
@@ -107,7 +101,7 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exi
     progress.lock().unwrap().update(1)?;
     Ok(match json["entryState"]["entryMap"].as_object() {
         None => {
-            println!("{}", json);
+            // println!("{}", json);
             println!("{}", entry_list_url);
             return Err(Error::msg(format!("Error occurred at {entry_list_url}")));
         }
@@ -180,7 +174,7 @@ fn theme_curator(theme: String, blog_id: &String) -> String {
         "yamagishi-riko" => "山岸理子",
         "yajima-maimi-official" => "矢島舞美",
         "inaba-manaka" => "稲場愛香",
-        _ => theme.as_str()
+        _ => theme.as_str(),
     };
     if theme_val == "梁川 奈々美" {
         "梁川奈々美".to_owned()
@@ -192,71 +186,69 @@ fn theme_curator(theme: String, blog_id: &String) -> String {
 fn html2text(handle: &Handle) -> (String, Vec<String>) {
     let node = handle;
     match node.data {
-        NodeData::Text { ref contents } => {
-            (contents.borrow().to_string(), vec![])
-        }
-        NodeData::Element { ref name, ref attrs, .. } => {
-            match name.local.to_string().as_str() {
-                "br" | "noscript" => ("\n".to_string(), vec![]),
-                "img" => {
-                    match attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "class") {
-                        None => ("".to_string(), vec![]),
-                        Some(attr) => {
-                            match attr.value.to_string().as_str() {
-                                "PhotoSwipeImage" => {
-                                    let image_url = attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "data-src").unwrap().value.to_string().replace("?caw=800", "?caw=1125");
-                                    if !image_url.contains(".jpg?caw") {
-                                        ("".to_string(), vec![])
-                                    } else {
-                                        (format!("-----image-----{}-----",
-                                                 attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "data-image-order").unwrap().value.to_string()),
-                                         vec![image_url])
-                                    }
-                                }
-                                _ => ("".to_string(), vec![])
-                            }
+        NodeData::Text { ref contents } => (contents.borrow().to_string(), vec![]),
+        NodeData::Element { ref name, ref attrs, .. } => match name.local.to_string().as_str() {
+            "br" | "noscript" => ("\n".to_string(), vec![]),
+            "img" => match attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "class") {
+                None => ("".to_string(), vec![]),
+                Some(attr) => match attr.value.to_string().as_str() {
+                    "PhotoSwipeImage" => {
+                        let image_url = attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "data-src").unwrap().value.to_string().replace("?caw=800", "?caw=1125");
+                        if !image_url.contains(".jpg?caw") {
+                            ("".to_string(), vec![])
+                        } else {
+                            (format!("-----image-----{}-----", attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "data-image-order").unwrap().value.to_string()), vec![image_url])
                         }
+                    }
+                    _ => ("".to_string(), vec![]),
+                },
+            },
+            x => {
+                if x == "div" {
+                    match attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "class") {
+                        None => {}
+                        Some(attr) => match attr.value.to_string().as_str() {
+                            "ogpCard_link" => {
+                                return (attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "href").unwrap().value.to_string(), vec![]);
+                            }
+                            _ => {}
+                        },
                     }
                 }
-                x => {
-                    if x == "div" {
-                        match attrs.borrow().iter().find(|attr| attr.name.local.to_string().as_str() == "class") {
-                            None => {}
-                            Some(attr) => {
-                                match attr.value.to_string().as_str() {
-                                    "ogpCard_link" => {
-                                        return (attrs.borrow().iter().find(|attr|
-                                        attr.name.local.to_string().as_str() == "href").unwrap().value.to_string(),
-                                                vec![]);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                    let mut images = vec![];
-                    let mut article = "".to_string();
-                    let _ = node.children.borrow().iter().map(|child| html2text(child)).map(|(txt, image)| {
+                let mut images = vec![];
+                let mut article = "".to_string();
+                let _ = node
+                    .children
+                    .borrow()
+                    .iter()
+                    .map(|child| html2text(child))
+                    .map(|(txt, image)| {
                         article = format!("{article}{txt}");
                         images.extend(image)
-                    }).collect::<Vec<_>>();
-                    if name.local.to_string() == "p" {
-                        article += "\n"
-                    }
-                    (article, images)
+                    })
+                    .collect::<Vec<_>>();
+                if name.local.to_string() == "p" {
+                    article += "\n"
                 }
+                (article, images)
             }
-        }
+        },
         NodeData::Document {} => {
             let mut images = vec![];
             let mut article = "".to_string();
-            let _ = node.children.borrow().iter().map(|child| html2text(child)).map(|(txt, image)| {
-                article = format!("{article}{txt}");
-                images.extend(image)
-            }).collect::<Vec<_>>();
+            let _ = node
+                .children
+                .borrow()
+                .iter()
+                .map(|child| html2text(child))
+                .map(|(txt, image)| {
+                    article = format!("{article}{txt}");
+                    images.extend(image)
+                })
+                .collect::<Vec<_>>();
             (article, images)
         }
-        _ => ("".to_string(), vec![])
+        _ => ("".to_string(), vec![]),
     }
 }
 
@@ -267,12 +259,17 @@ async fn parse_article_page(client: Client, page_data: PageData, progress: Arc<M
     let (_, &ref entry_main) = json["entryState"]["entryMap"].as_object().unwrap().iter().next().unwrap();
     let dom = parse_document(RcDom::default(), Default::default()).one(entry_main["entry_text"].clone().as_str().unwrap());
     let (text, images) = html2text(&dom.document);
-    let images = images.iter().enumerate().map(|(order, url)| (
-        url.to_owned(),
-        Path::new(DATA_PATH).join("blog_images").join(page_data.theme.clone()).join(
-            format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_key, page_data.article_id, order)),
-        page_data.article_datetime
-    )).collect::<Vec<_>>();
+    let images = images
+        .iter()
+        .enumerate()
+        .map(|(order, url)| {
+            (
+                url.to_owned(),
+                DATA_PATH.join("blog_images").join(page_data.theme.clone()).join(format!("{}={}={}-{}.jpg", page_data.theme, page_data.blog_key, page_data.article_id, order)),
+                page_data.article_datetime,
+            )
+        })
+        .collect::<Vec<_>>();
 
     progress.lock().unwrap().update(1)?;
 
@@ -314,7 +311,7 @@ async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedO
 #[tokio::main]
 async fn main() {
     SQLITE_DB.get_or_init(|| async {
-        let sqlite_path = Path::new(DATA_PATH).join("blog_text.sqlite");
+        let sqlite_path = DATA_PATH.join("blog_text.sqlite");
         let option = SqliteConnectOptions::new().create_if_missing(true).filename(sqlite_path);
         let pool = Arc::new(Mutex::new(SqlitePool::connect_with(option).await.unwrap()));
         // let mut conn = pool.lock().unwrap().acquire().await.unwrap();
@@ -331,9 +328,13 @@ async fn main() {
 
     let blog_names_file: PathBuf = Path::new(&current_dir().unwrap()).join("blog_names.txt");
 
-    let blog_list = BufReader::new(File::open(blog_names_file).unwrap()).lines().map(
-        |x| x.unwrap()
-    ).collect::<Vec<_>>();
+    let blog_list = BufReader::new(File::open(blog_names_file).unwrap())
+        .lines()
+        .filter_map(|x| match x {
+            Ok(x) if !x.starts_with("#") => Some(x.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let reqwest_client = Client::builder()
         // .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0")
         .build().unwrap();
