@@ -1,11 +1,17 @@
+use core::fmt::Debug;
 use std::{f32};
 use std::ops::{Add, Div, Mul};
 use std::time::Instant;
-use anyhow:: Result;
+use anyhow::Result;
 use itertools::{enumerate, iproduct, Itertools};
-use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, Ix2, s};
-use ort::{inputs, Session, Value};
-use zune_image::codecs::qoi::zune_core::options::DecoderOptions;
+use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, Ix2, s, IxDyn};
+use num_traits::{AsPrimitive, FromPrimitive, ToPrimitive};
+use ort::inputs;
+use ort::session::{Session, builder::GraphOptimizationLevel};
+use ort::tensor::PrimitiveTensorElementType;
+use ort::value::{Tensor, Value};
+use tracing::debug;
+use  zune_image::codecs::qoi::zune_core::options::DecoderOptions;
 use zune_image::image::Image;
 // use zune_jpeg::JpegDecoder;
 // use zune_jpeg::zune_core::bytestream::ZCursor;
@@ -26,7 +32,7 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     // };
     // // resized_image.save("prepare.jpg").unwrap();
     let decoder = Image::read(&image, DecoderOptions::default()).unwrap();
-    let (width, height) =decoder.dimensions();
+    let (width, height) = decoder.dimensions();
     // let (width, height) = match decoder.dimensions() {
     //     None => { return Err(anyhow!("dimension error")); }
     //     Some(x) => { x }
@@ -34,10 +40,10 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     // NCHW
     let decode_vec = &decoder.flatten_to_u8()[0];
     let output_image = Array4::from_shape_fn((1, 3, height, width),
-                                                 |(n, c, h, w)| {
-                                                     let order = n * (height * width * 3) + h * (width * 3) + w * (3) + c;
-                                                     if order >= width * height * 3 { 0.0 } else { decode_vec[order] as f32 / 255.0 }
-                                                 });
+                                             |(n, c, h, w)| {
+                                                 let order = n * (height * width * 3) + h * (width * 3) + w * (3) + c;
+                                                 if order >= width * height * 3 { 0.0 } else { decode_vec[order] as f32 / 255.0 }
+                                             });
     // let mut output_image = Array3::from_shape_vec((height, width, 3), decoder.decode().unwrap()).unwrap();
     // let output_image = output_image.permuted_axes([2, 0, 1]).into_shape((1, 3, height, width)).unwrap().mapv(|val| val as f32 / 255.0);
     // let output_image =Array4::zeros((1,3,width,height));
@@ -105,14 +111,14 @@ fn decode(loc: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) ->
 
 
 fn decode_landmark(pre: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f32; 2]) -> Array<f32, Ix2> {
-    return concatenate(Axis(1),
-                       &*vec![
-                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,..2]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
-                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,2..4]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
-                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,4..6]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
-                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,6..8]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
-                           (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,8..10]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
-                       ]).unwrap();
+    concatenate(Axis(1),
+                &*vec![
+                    (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,..2]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                    (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,2..4]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                    (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,4..6]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                    (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,6..8]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                    (priors.slice(s![..,..2]).to_owned() + pre.slice(s![..,8..10]).mapv(|x| x * variances[0]) * priors.slice(s![..,2..])).view(),
+                ]).unwrap()
 }
 
 fn nms_impl(boxes: Array<f32, Ix2>, scores: Array<f32, Ix1>, nms_threshold: f32) -> Vec<usize> {
@@ -155,46 +161,40 @@ fn nms_impl(boxes: Array<f32, Ix2>, scores: Array<f32, Ix1>, nms_threshold: f32)
 }
 
 
-pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>> {
+pub fn infer<T: PrimitiveTensorElementType + AsPrimitive<f32> + FromPrimitive + ToPrimitive + Debug>(session: &Session, raw_image: Array4<f32>) -> Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
     const _MAX_SIZE: usize = 640;
 
+    //
+
+    debug!("{:?}", raw_image.dim());
+
+
+    let onnx_input = inputs![
+        "input"=>Tensor::from_array(raw_image.mapv(|v| T::from_f32(v).unwrap())).unwrap()
+    ]?;
+
+    // println!("{}", raw_image);
+    let now = Instant::now();
+
+    let model_res = session.run(onnx_input)?;
+
+    let extract = |tensor: &Value| tensor.try_extract_tensor::<T>().unwrap().view().to_owned().mapv(|v| v.as_());
+    let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract(model_res.get(label).unwrap()));
+    debug!("Inferred time: {:?}", now.elapsed());
+    Ok((confidence, loc, landmark, raw_image.shape().to_vec()))
+}
+pub fn post_process(confidence: Array<f32, IxDyn>, loc: Array<f32, IxDyn>, landmark: Array<f32, IxDyn>, input_shape: Vec<usize>) -> Result<Vec<Vec<FoundFace>>> {
     let confidence_threshold = 0.02;
     let nms_threshold = 0.4;
     let vis_threshold = 0.6;
     // let keep_top_k = 750;
     let top_k = 5000;
     let variance = [0.1, 0.2];
-
-    // let image;
-    //
-    // let mut decoder =JpegDecoder::new(&image_bytes);
-    // let size = decoder.dimensions().unwrap();
-    // match decoder.decode() {
-    //     Ok(i) => { image = i }
-    //     Err(err) => {
-    //         eprintln!("Error while loading image: {}", err);
-    //         return Err(err.to_string());
-    //     }
-    // };
-    let raw_image = transform(image_bytes)?;
-    println!("{:?}", raw_image.dim());
-
-    let binding = raw_image.to_owned();
-    let input_shape = binding.shape();
-    let onnx_input = inputs!["input"=>raw_image.view()].unwrap();
     let transformed_size = array![input_shape[3], input_shape[2]].to_owned();
+    let post_processing_time = Instant::now();
 
-    // println!("{}", raw_image);
-
-    let now = Instant::now();
-    let model_res = session.run(onnx_input).unwrap();
-    println!("ONNX Inference time: {:?}", now.elapsed());
-
-    let extract = |tensor: &Value| tensor.extract_tensor::<f32>().unwrap().view().to_owned();
-    let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract(model_res.get(label).unwrap()));
-
-    let scale_landmarks = concatenate(Axis(0), &*vec![transformed_size.view(); 5]).unwrap().mapv(|x| x as f32);
-    let scale_bboxes = concatenate(Axis(0), &*vec![transformed_size.view(); 2]).unwrap().mapv(|x| x as f32);
+    let scale_landmarks = concatenate(Axis(0), &*vec![transformed_size.view(); 5])?.mapv(|x| x as f32);
+    let scale_bboxes = concatenate(Axis(0), &*vec![transformed_size.view(); 2])?.mapv(|x| x as f32);
 
     let (prior_box, _onnx_output_width) = prior_box(
         vec![vec![16, 32], vec![64, 128], vec![256, 512]],
@@ -203,51 +203,59 @@ pub fn infer(session: &Session, image_bytes: Vec<u8>) -> Result<Vec<FoundFace>> 
         [input_shape[2], input_shape[3]],
     );
 
-    let mut boxes = decode(loc.slice(s![0,..,..]).to_owned(), prior_box.clone(), variance);
-    boxes = boxes * scale_bboxes;
 
-    let mut scores = confidence.slice(s![0,..,1]).to_owned() as Array<f32, Ix1>;
-    let mut landmarks = decode_landmark(landmark.slice(s![0,..,..]).to_owned(), prior_box.clone(), variance);
-    landmarks = landmarks * scale_landmarks;
+    let mut outputs = vec![];
+    for i in 0..confidence.shape()[0] {
+        let mut boxes = decode(loc.slice(s![i,..,..]).to_owned(), prior_box.clone(), variance);
+        boxes = boxes * scale_bboxes.clone();
 
-    let indices = scores.iter().enumerate().filter(|(_, val)| val > &&confidence_threshold).map(|(order, _)| order).collect::<Vec<_>>();
-    boxes = boxes.select(Axis(0), &*indices);
-    landmarks = landmarks.select(Axis(0), &*indices);
-    scores = scores.select(Axis(0), &*indices);
+        let mut scores = confidence.slice(s![i,..,1]).to_owned() as Array<f32, Ix1>;
+        let mut landmarks = decode_landmark(landmark.slice(s![i,..,..]).to_owned(), prior_box.clone(), variance);
 
-    let mut order = scores.clone().iter().enumerate().sorted_by(|a, b| b.1.partial_cmp(a.1).unwrap()).map(|x| x.0).collect::<Vec<_>>();
-    if order.len() > top_k {
-        order = order[..top_k].to_vec()
+
+        landmarks = landmarks * scale_landmarks.clone();
+
+        let indices = scores.iter().enumerate().filter(|(_, val)| val > &&confidence_threshold).map(|(order, _)| order).collect::<Vec<_>>();
+        boxes = boxes.select(Axis(0), &*indices);
+        landmarks = landmarks.select(Axis(0), &*indices);
+        scores = scores.select(Axis(0), &*indices);
+
+        let mut order = scores.clone().iter().enumerate().sorted_by(|a, b| b.1.partial_cmp(a.1).unwrap()).map(|x| x.0).collect::<Vec<_>>();
+        if order.len() > top_k {
+            order = order[..top_k].to_vec()
+        }
+        boxes = boxes.select(Axis(0), &*order);
+        landmarks = landmarks.select(Axis(0), &*order);
+        scores = scores.select(Axis(0), &*order);
+
+
+        let keep = nms_impl(boxes.clone(), scores.clone(), nms_threshold);
+
+
+        let boxes = boxes.select(Axis(0), &*keep);
+        let scores = scores.select(Axis(0), &*keep);
+        let landmarks = landmarks.select(Axis(0), &*keep);
+
+        let vis_score_keep = scores.iter().enumerate().filter(|x| x.1 > &vis_threshold).map(|x| x.0).collect::<Vec<_>>();
+
+
+        let mut faces = vec![];
+        for index in vis_score_keep {
+            faces.push(FoundFace {
+                bbox: <[f32; 4]>::try_from(boxes.slice(s![index,..]).to_vec()).unwrap(),
+                score: *scores.get(index).unwrap(),
+                landmarks: <[[f32; 2]; 5]>::try_from(landmarks.slice(s![index,..]).to_vec().chunks_exact(2).map(|x| { <[f32; 2]>::try_from(x).unwrap() }).collect::<Vec<_>>()).unwrap(),
+            });
+            // print!("{}\t", boxes.slice(s![index,..]));
+            // print!("{}\t", scores.slice(s![index]));
+            // println!("{}", landmarks.slice(s![index,..]));
+        }
+        outputs.push(faces)
     }
-    boxes = boxes.select(Axis(0), &*order);
-    landmarks = landmarks.select(Axis(0), &*order);
-    scores = scores.select(Axis(0), &*order);
+    debug!("Post processed time: {:?}", post_processing_time.elapsed());
 
-
-    let keep = nms_impl(boxes.clone(), scores.clone(), nms_threshold);
-
-
-    let boxes = boxes.select(Axis(0), &*keep);
-    let scores = scores.select(Axis(0), &*keep);
-    let landmarks = landmarks.select(Axis(0), &*keep);
-
-    let vis_score_keep = scores.iter().enumerate().filter(|x| x.1 > &vis_threshold).map(|x| x.0).collect::<Vec<_>>();
-
-
-    let mut faces = vec![];
-    for index in vis_score_keep {
-        faces.push(FoundFace {
-            bbox: <[f32; 4]>::try_from(boxes.slice(s![index,..]).to_vec()).unwrap(),
-            score: *scores.get(index).unwrap(),
-            landmarks: <[[f32; 2]; 5]>::try_from(landmarks.slice(s![index,..]).to_vec().chunks_exact(2).map(|x| { <[f32; 2]>::try_from(x).unwrap() }).collect::<Vec<_>>()).unwrap(),
-        });
-        // print!("{}\t", boxes.slice(s![index,..]));
-        // print!("{}\t", scores.slice(s![index]));
-        // println!("{}", landmarks.slice(s![index,..]));
-    }
     // println!("{:?}", faces);
-
-    Ok(faces)
+    Ok(outputs)
 }
 
 //
