@@ -68,10 +68,10 @@ impl RetinaFaceFaceDetector {
             }
         }
     }
-    pub fn infer<T: PrimitiveTensorElementType + AsPrimitive<f32> + ToPrimitive + FromPrimitive + Debug>(&self, image: Array4<f32>) -> anyhow::Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
+    pub fn infer(&self, image: Array4<f32>) -> anyhow::Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
         match self.model {
-            ModelKind::MobileNet => { retinaface_mobilenet::infer::<T>(&self.session, image) }
-            ModelKind::ResNet => { retinaface_resnet::infer::<T>(&self.session, image) }
+            ModelKind::MobileNet => { retinaface_mobilenet::infer(&self.session, image) }
+            ModelKind::ResNet => { retinaface_resnet::infer(&self.session, image) }
         }
     }
 
@@ -82,8 +82,8 @@ impl RetinaFaceFaceDetector {
         }
     }
 
-    pub fn find_face<T: PrimitiveTensorElementType + AsPrimitive<f32> + ToPrimitive + FromPrimitive + Debug>(&self, image: Array4<f32>) -> Vec<Vec<FoundFace>> {
-        let (confidence, loc, landmark, input_shape) = self.infer::<T>(image).unwrap();
+    pub fn find_face(&self, image: Array4<f32>) -> Vec<Vec<FoundFace>> {
+        let (confidence, loc, landmark, input_shape) = self.infer(image).unwrap();
         self.post_process(confidence, loc, landmark, input_shape).unwrap()
     }
 

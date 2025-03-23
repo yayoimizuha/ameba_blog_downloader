@@ -33,7 +33,7 @@ kdam = { version = "*" }
 filetime = { version = "*" }
 #ndarray-linalg = { version = "*", features = ["default"] }
 #tract-onnx = { version = "*" }
-ndarray-npy = { version = "0.8.1" }
+ndarray-npy = { version = "0.9.1" }
 itertools = { version = "*" }
 powerboxesrs = { version = "*" }
 once_cell = { version = "*" }
@@ -59,6 +59,8 @@ num-traits = "0.2.19"
 turbojpeg = { version = "*" }
 fast_image_resize = { version = "*" }
 half = { version = "*", features = ["default", "num-traits"] }
+sha2 = { version = "*" }
+hdf5-metno = { version = "*", features = ["static"] }
 [dependencies.ort]
 version = "2.0.0-rc.9"
 features = ["tensorrt", "cuda", "load-dynamic", "half", "openvino"]
@@ -72,3 +74,4 @@ opt-level = 3
 #OPENSSL_DIR = "C:\\Users\\tomokazu\\build\\vcpkg\\packages\\openssl_x64-windows"
 #[env]
 #ORT_LIB_LOCATION = "C:\\Users\\tomokazu\\Downloads\\Microsoft.ML.OnnxRuntime.DirectML.1.17.3(1)\\runtimes\\win-x64\\native"
+

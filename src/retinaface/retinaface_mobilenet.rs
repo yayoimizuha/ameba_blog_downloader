@@ -161,7 +161,7 @@ fn nms_impl(boxes: Array<f32, Ix2>, scores: Array<f32, Ix1>, nms_threshold: f32)
 }
 
 
-pub fn infer<T: PrimitiveTensorElementType + AsPrimitive<f32> + FromPrimitive + ToPrimitive + Debug>(session: &Session, raw_image: Array4<f32>) -> Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
+pub fn infer(session: &Session, raw_image: Array4<f32>) -> Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
     const _MAX_SIZE: usize = 640;
 
     //
@@ -170,7 +170,7 @@ pub fn infer<T: PrimitiveTensorElementType + AsPrimitive<f32> + FromPrimitive + 
 
 
     let onnx_input = inputs![
-        "input"=>Tensor::from_array(raw_image.mapv(|v| T::from_f32(v).unwrap())).unwrap()
+        "input"=>raw_image.clone()
     ]?;
 
     // println!("{}", raw_image);
@@ -178,7 +178,7 @@ pub fn infer<T: PrimitiveTensorElementType + AsPrimitive<f32> + FromPrimitive + 
 
     let model_res = session.run(onnx_input)?;
 
-    let extract = |tensor: &Value| tensor.try_extract_tensor::<T>().unwrap().view().to_owned().mapv(|v| v.as_());
+    let extract = |tensor: &Value| tensor.try_extract_tensor::<f32>().unwrap().view().to_owned().mapv(|v| v.as_());
     let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract(model_res.get(label).unwrap()));
     debug!("Inferred time: {:?}", now.elapsed());
     Ok((confidence, loc, landmark, raw_image.shape().to_vec()))
