@@ -10,21 +10,18 @@ use rayon::prelude::*;
 use ameba_blog_downloader::data_dir;
 use turbojpeg::{Decompressor, Image, PixelFormat};
 use fast_image_resize::images::Image as fir_Image;
-use half::f16;
 use ndarray::{arr1, arr2, array, Array, Array4, IxDyn};
 use ort::session::Session;
 use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
-use image::{Rgb, RgbImage, Rgba, RgbaImage};
-use image::imageops::{crop, crop_imm};
-use imageproc::definitions::HasWhite;
-use imageproc::drawing::{draw_hollow_polygon, draw_hollow_polygon_mut, draw_hollow_rect_mut, draw_polygon};
+use image::{Rgb, RgbImage};
+use image::imageops::{ crop_imm};
+use imageproc::drawing::{ draw_hollow_polygon_mut};
 use imageproc::geometric_transformations::{rotate, Interpolation};
 use imageproc::point::Point;
-use imageproc::rect::Rect;
-use itertools::{all, Itertools};
+use itertools:: Itertools;
 use kdam::{tqdm, BarExt};
 use num_traits::FloatConst;
-use tracing::{debug, Instrument};
+use tracing::debug;
 use ameba_blog_downloader::retinaface::found_face::FoundFace;
 
 static BATCH_SIZE: usize = 64;
@@ -54,6 +51,8 @@ fn calc_tilt(landmarks: [[f32; 2]; 5]) -> f32 {
     let mouse_center = [(landmarks[3][0] + landmarks[4][0]) / 2.0, (landmarks[3][1] + landmarks[4][1]) / 2.0];
     f32::atan2(eye_center[1] - mouse_center[1], eye_center[0] - mouse_center[0])
 }
+
+#[allow(dead_code)]
 fn draw_rect(original_image: RgbImage, scale: f32, faces: Vec<FoundFace>) -> RgbImage {
     let scale = 1.0 / scale;
     let mut palette = original_image;
@@ -113,7 +112,7 @@ fn postprocess(model_output_receiver: Receiver<(Array<f32, IxDyn>, Array<f32, Ix
                 originals.insert(path.clone(), (image, scale));
                 true
             }
-            Err(err) => { false }
+            Err(_err) => { false }
         } {}
 
         let faces_vec = detector.post_process(confidence, loc, landmark, input_shape).unwrap();
