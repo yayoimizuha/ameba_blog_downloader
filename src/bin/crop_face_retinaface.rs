@@ -13,7 +13,9 @@ use ameba_blog_downloader::data_dir;
 use turbojpeg::{Decompressor, Image, PixelFormat};
 use fast_image_resize::images::Image as fir_Image;
 use futures::executor::block_on;
-use futures::future::join_all;
+use futures::future::{join_all, select_all};
+use futures::FutureExt;
+use futures::stream::SelectAll;
 use ndarray::{arr1, arr2, array, Array, Array4, IxDyn};
 use ort::session::{InferenceFut, NoSelectedOutputs, Session};
 use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
@@ -29,6 +31,8 @@ use ort::execution_providers::OpenVINOExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{Tensor, Value};
+use tokio::pin;
+use tokio_stream::StreamMap;
 use tracing::debug;
 use ameba_blog_downloader::retinaface::found_face::FoundFace;
 
@@ -219,8 +223,8 @@ fn main() {
     let post_process_handle = thread::spawn(move || {
         postprocess(postprocess_receiver, original_receiver, file_length);
     });
-    for large_chunk in all_files.chunks(LARGE_BATCH_SIZE) {
-        let _ = large_chunk.chunks(BATCH_SIZE).collect::<Vec<_>>().into_par_iter().map(|files| {
+    let _ = all_files.chunks(LARGE_BATCH_SIZE).collect::<Vec<_>>().into_par_iter().map(|large_chunk| {
+        let _ = large_chunk.chunks(BATCH_SIZE).collect::<Vec<_>>().into_iter().map(|files| {
             let mut decompressor = Decompressor::new().unwrap();
             let mut resizer = fast_image_resize::Resizer::new();
             unsafe { resizer.set_cpu_extensions(fast_image_resize::CpuExtensions::Avx2); }
@@ -274,7 +278,7 @@ fn main() {
 
         debug!("{}", "finished decode.");
         // println!("{}", "finished decode.");
-    }
+    }).collect::<Vec<_>>();
     decoder_sender.send((Tensor::from_array(array![[[[0.0]]]]).unwrap(), vec![])).unwrap();
     inference_handle.join().unwrap();
     post_process_handle.join().unwrap();

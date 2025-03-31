@@ -59,8 +59,10 @@ num-traits = "0.2.19"
 turbojpeg = { version = "*" }
 fast_image_resize = { version = "*" }
 half = { version = "*", features = ["default", "num-traits"] }
+tokio-stream = { version = "*", features = ["full"] }
 sha2 = { version = "*" }
 hdf5-metno = { version = "*", features = ["static"] }
+clap = { version = "*" }
 [dependencies.ort]
 version = "2.0.0-rc.9"
 features = ["tensorrt", "cuda", "load-dynamic", "half", "openvino"]
