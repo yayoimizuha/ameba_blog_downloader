@@ -5,6 +5,9 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[workspace]
+resolver = "2"
+
 [dependencies]
 tokio = { version = "*", features = ["full"] }
 reqwest = { version = "*", features = ["default", "json"] }
@@ -16,7 +19,7 @@ serde = { version = "*", features = ["default", "derive"] }
 image = { version = "*", features = ["jpeg", "png"] }
 tracing-subscriber = { version = "*", features = ["fmt", "env-filter"] }
 #rand = { version = "*", features = ["default"] }
-ndarray = { version = "0.16.1", features = ["default", "serde", "serde-1"] }
+ndarray = { version = "*", features = ["default", "serde", "serde-1"] }
 imageproc = { version = "*", features = ["default"] }
 #include-bytes-zstd = { version = "0.1.0" }
 #wasm-bindgen = { version = "*" }
@@ -48,7 +51,7 @@ zune-image = { version = "*", features = ["all"] }
 rand = { version = "*" }
 wgpu = { version = "*" }
 #pprof = { version = "*", features = ["default", "protobuf", "flamegraph"] }
-crc32fast = { version = "*   " }
+crc32fast = { version = "*" }
 zerocopy = { version = "0.8.0-alpha.14" }
 gcp_access_token = { version = "*" }
 directories = { version = "*" }
@@ -63,9 +66,12 @@ tokio-stream = { version = "*", features = ["full"] }
 sha2 = { version = "*" }
 hdf5-metno = { version = "*", features = ["static"] }
 clap = { version = "*" }
+#usls = { version = "0.1.0-beta.1" }
+bincode = { version = "*", features = ["serde"] }
+twox-hash = { version = "*", features = ["xxhash3_128"] }
 [dependencies.ort]
-version = "2.0.0-rc.9"
-features = ["tensorrt", "cuda", "load-dynamic", "half", "openvino"]
+version = "=2.0.0-rc.10"
+features = ["tensorrt", "cuda", "load-dynamic", "half", "openvino","ndarray"]
 [profile.relwithdebinfo]
 inherits = "release"
 debug = "full"

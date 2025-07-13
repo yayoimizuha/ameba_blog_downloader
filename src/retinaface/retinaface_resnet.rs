@@ -1,23 +1,24 @@
-use core::fmt::Debug;
-use std::{f32};
-use std::ops::{Div, Mul};
-use std::time::Instant;
+use ort::value::TensorRef;
+use super::found_face::FoundFace;
+use crate::retinaface::nms_copy::nms;
 use anyhow::Result;
+use core::fmt::Debug;
 use half::f16;
 use itertools::{enumerate, iproduct};
-use ndarray::{arr2, Array, array, Array2, Array4, concatenate, Ix1, Ix2, s, Axis, Array1, Ix4, IxDyn};
+use ndarray::{arr2, array, concatenate, s, Array, Array1, Array2, Array4, Axis, Ix1, Ix2, Ix4, IxDyn};
 use num_traits::{AsPrimitive, Float, FromPrimitive, Num, ToPrimitive};
-use ort::tensor::{ArrayExtensions, PrimitiveTensorElementType};
 use ort::inputs;
-use ort::session::{Session, builder::GraphOptimizationLevel};
+use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::sys::{OrtMemType, OrtTypeInfo};
+use ort::tensor::{ArrayExtensions, PrimitiveTensorElementType};
 use ort::value::{Tensor, Value};
+use std::ops::{Div, Mul};
+use std::time::Instant;
+use std::f32;
 use tracing::debug;
 // use powerboxesrs::nms::nms;
 use zune_image::codecs::bmp::zune_core::options::DecoderOptions;
 use zune_image::image::Image;
-use crate::retinaface::nms_copy::nms;
-use super::found_face::FoundFace;
 
 // const ONNX_PATH: &str = r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader\src\bin\resnet_retinaface.onnx"#;
 
@@ -149,7 +150,7 @@ fn decode_landmark(pre: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f3
 }
 
 
-pub fn infer(session: &Session, raw_image: Array4<f32>) -> Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
+pub fn infer(session: &mut Session, raw_image: Array4<f32>) -> Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
     const _MAX_SIZE: usize = 640;
     // 
     // let transform_time = Instant::now();
@@ -157,9 +158,9 @@ pub fn infer(session: &Session, raw_image: Array4<f32>) -> Result<(Array<f32, Ix
     debug!("{:?}", raw_image.dim());
     // println!("Image transformation time: {:?}", transform_time.elapsed());
 
-    let onnx_input = inputs! {
-        "input"=>raw_image.clone()
-    }?;
+    let onnx_input = inputs! [
+        "input"=>Tensor::from_array(raw_image.clone())?
+    ];
 
     // println!("{}", raw_image);
 
@@ -167,7 +168,7 @@ pub fn infer(session: &Session, raw_image: Array4<f32>) -> Result<(Array<f32, Ix
     let model_res = session.run(onnx_input)?;
     debug!("Inferred time: {:?}", now.elapsed());
 
-    let extract = |tensor: &Value| tensor.try_extract_tensor::<f32>().unwrap().view().to_owned().mapv(|v| v.as_());
+    let extract = |tensor: &Value| tensor.try_extract_array::<f32>().unwrap().view().to_owned().mapv(|v| v.as_());
     let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract(model_res.get(label).unwrap()));
     Ok((confidence, loc, landmark, raw_image.shape().to_vec()))
 }

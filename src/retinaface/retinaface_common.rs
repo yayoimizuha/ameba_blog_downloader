@@ -68,10 +68,10 @@ impl RetinaFaceFaceDetector {
             }
         }
     }
-    pub fn infer(&self, image: Array4<f32>) -> anyhow::Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
+    pub fn infer(&mut self, image: Array4<f32>) -> anyhow::Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
         match self.model {
-            ModelKind::MobileNet => { retinaface_mobilenet::infer(&self.session, image) }
-            ModelKind::ResNet => { retinaface_resnet::infer(&self.session, image) }
+            ModelKind::MobileNet => { retinaface_mobilenet::infer(&mut self.session, image) }
+            ModelKind::ResNet => { retinaface_resnet::infer(&mut self.session, image) }
         }
     }
 
@@ -82,7 +82,7 @@ impl RetinaFaceFaceDetector {
         }
     }
 
-    pub fn find_face(&self, image: Array4<f32>) -> Vec<Vec<FoundFace>> {
+    pub fn find_face(&mut self, image: Array4<f32>) -> Vec<Vec<FoundFace>> {
         let (confidence, loc, landmark, input_shape) = self.infer(image).unwrap();
         self.post_process(confidence, loc, landmark, input_shape).unwrap()
     }

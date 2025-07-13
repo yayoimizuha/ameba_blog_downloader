@@ -21,7 +21,7 @@ sugaya-risako-blog
 miyamotokarin-official
 kobushi-factory
 sayumimichishige-blog
-kudo--haruka
+# kudo--haruka
 airisuzuki-officialblog
 angerme-ayakawada
 miyazaki-yuka-blog

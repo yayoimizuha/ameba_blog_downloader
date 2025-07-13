@@ -1,163 +1,194 @@
-use ameba_blog_downloader::data_dir;
+// use ameba_blog_downloader::data_dir;
+use bincode::{config, Decode, Encode};
 use fast_image_resize::images::Image as fir_Image;
-use fast_image_resize::{ PixelType, ResizeOptions};
-use futures::executor::block_on;
+use fast_image_resize::{PixelType, ResizeOptions};
+use futures::future::join_all;
+use itertools::Itertools;
 use kdam::{tqdm, BarExt};
 use ndarray::{array, s, Array, Array3, Array4, IxDyn};
 use ort::execution_providers::OpenVINOExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::session::Session;
-use ort::tensor::Utf8Data;
+use ort::session::{RunOptions, Session};
 use ort::value::Tensor;
-use rayon::prelude::*;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
 use sha2::{Digest, Sha256};
-use std::collections::VecDeque;
-use std::fs::File;
-use std::io::Read;
-use std::path::PathBuf;
+use std::collections::{HashSet, VecDeque};
+use std::fs::{DirEntry, File};
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Write};
 use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
+use tokio::io::AsyncReadExt;
 use turbojpeg::{Decompressor, Image, PixelFormat};
+use twox_hash::XxHash3_128;
+use ameba_blog_downloader::{data_dir, Entities, Entity};
 
 static BATCH_SIZE: usize = 256;
 static DECODE_FORMAT: PixelFormat = PixelFormat::RGB;
 static INFERENCE_SIZE: usize = 112;
 static FACE_FEATURE_MODEL: &[u8] = include_bytes!(r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Export\onnx_dest\arcface_unpg_f16_with_fp32_io.onnx");
 
-async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(PathBuf, String)>)>, file_count: usize) {
+
+// async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(String, u128)>)>, sender: Sender<(Array<f32, IxDyn>, Vec<(String, u128)>)>) {
+//     ort::init().commit().unwrap();
+//     let buf_size = 16;
+//     let mut model = Session::builder().unwrap()
+//         .with_execution_providers([
+//             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
+//         ]).unwrap()
+//         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
+//         .with_intra_threads(buf_size).unwrap()
+//         .commit_from_memory(FACE_FEATURE_MODEL).unwrap();
+// 
+//     let mut futures = VecDeque::new();
+//     let infer = async |(tensor, metas)| {
+//         let opt = RunOptions::new().unwrap();
+//         
+//         let resp = model.run_async(inputs! {"input"=>tensor},&opt).unwrap().await.unwrap();
+//         let out_tensor = resp.get("output").unwrap().try_extract_array::<f32>().unwrap().view().into_owned();
+//         // sender.send((out_tensor, paths)).unwrap();
+//         (out_tensor, metas)
+//     };
+// 
+//     while match receiver.try_recv() {
+//         Ok(t) => {
+//             if t.1.is_empty() { false } else {
+//                 futures.push_back(infer(t));
+//                 true
+//             }
+//         }
+//         Err(_) => {
+//             let mut cnt = 0;
+//             while match futures.pop_front() {
+//                 None => { false }
+//                 Some(future) => {
+//                     let (tensor, metas) = future.await;
+//                     sender.send((tensor, metas)).unwrap();
+//                     cnt += 1;
+//                     true
+//                 }
+//             } && cnt < buf_size {}
+//             true
+//         }
+//     } {}
+//     for future in futures {
+//         let (tensor, metas) = future.await;
+//         sender.send((tensor, metas)).unwrap();
+//     }
+//     println!("fin inference");
+//     sender.send((Array::default([0]).into_dyn(), vec![])).unwrap();
+// }
+async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(String, u128)>)>, sender: Sender<(Array<f32, IxDyn>, Vec<(String, u128)>)>) {
     ort::init().commit().unwrap();
-    let model_hash = Sha256::digest(FACE_FEATURE_MODEL).to_ascii_lowercase().into_iter().map(|v| format!("{:02X}", v)).collect::<String>();
-    let model = Session::builder().unwrap()
+    let mut model = Session::builder().unwrap()
         .with_execution_providers([
             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
         ]).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
+        .with_intra_threads(16).unwrap() // Using a fixed number, original was tied to buf_size
         .commit_from_memory(FACE_FEATURE_MODEL).unwrap();
-    let mut futures = VecDeque::new();
-    let mut bar = tqdm!(total=file_count,disable=false);
-    let infer = async |(tensor, paths)| {
-        let resp = model.run_async(inputs! {"input"=>tensor}.unwrap()).unwrap().await.unwrap();
-        let out_tensor = resp.get("output").unwrap().try_extract_tensor::<f32>().unwrap().view().into_owned();
-        // sender.send((out_tensor, paths)).unwrap();
-        (out_tensor, paths)
-    };
-    let face_embeddings = hdf5_metno::File::append(data_dir().join("face_embeddings.hdf5")).unwrap();
-    let save_emb = |emb: (Array<f32, IxDyn>, Vec<(PathBuf, String)>)| {
-        for (order, (path, hash)) in emb.1.iter().enumerate() {
-            let store_path = face_embeddings.group(model_hash.as_str()).unwrap().group(path.parent().unwrap().file_name().unwrap().to_str().unwrap()).unwrap();
-            let builder = store_path.new_dataset_builder();
-            if store_path.link_exists(path.file_name().unwrap().to_str().unwrap()) {
-                store_path.unlink(path.file_name().unwrap().to_str().unwrap()).unwrap();
-            }
-            let dataset = builder.with_data(emb.0.slice(s![order,..])).create(path.file_name().unwrap().to_str().unwrap()).unwrap();
-            let hash_vec = hash.as_utf8_bytes();
-            let attr = dataset.new_attr::<u8>().shape(hash_vec.len()).create("hash").unwrap();
-            attr.write(hash_vec).unwrap();
-        }
-        let update_len = emb.1.len();
-        let member_name = emb.1.last().unwrap().clone().0.parent().unwrap().file_name().unwrap().to_str().unwrap().to_string();
-        (update_len, member_name)
-    };
-    while match receiver.try_recv() {
-        Ok(t) => {
-            if t.1.is_empty() { false } else {
-                futures.push_back(infer(t));
-                true
-            }
-        }
-        Err(_) => {
-            while match futures.pop_front() {
-                None => { false }
-                Some(x) => {
-                    let (len, postfix) = save_emb(x.await);
 
-                    let postfix = postfix.to_owned() + "\0".repeat(postfix.chars().count()).as_str();
-                    if bar.postfix != postfix {
-                        bar.set_postfix(postfix);
-                    }
-                    bar.update(len).unwrap();
+    let opt = RunOptions::new().unwrap();
+
+    // Use a blocking `for` loop on the receiver. This is more idiomatic and efficient
+    // than a `try_recv` busy-loop. The task will sleep until a message is ready.
+    for (tensor, metas) in receiver {
+        // Check for the sentinel value (a batch with no metadata) to end the loop.
+        if metas.is_empty() {
+            break;
+        }
+
+        // Run one inference at a time. The `.await` will pause this loop,
+        // yielding control until the GPU operation is complete.
+        let resp = model.run_async(inputs! {"input"=>tensor}, &opt).unwrap().await.unwrap();
+        let out_tensor = resp.get("output").unwrap().try_extract_array::<f32>().unwrap().view().into_owned();
+
+        // Send the result to the collector. If it fails, the collector has shut down.
+        if sender.send((out_tensor, metas)).is_err() {
+            eprintln!("Collector thread disconnected, inference is stopping.");
+            break;
+        }
+    }
+
+    println!("fin inference");
+    // Send the final sentinel value to signal the collector to finish.
+    let _ = sender.send((Array::default([0]).into_dyn(), vec![]));
+}
+fn collector(receiver: Receiver<(Array<f32, IxDyn>, Vec<(String, u128)>)>, entities: Entities, proc_len: usize) -> Entities {
+    let mut entities = entities;
+    let mut bar = tqdm!(total=proc_len,disable=false);
+    while match receiver.try_recv() {
+        Ok((tensor, metas)) => {
+            match metas.len() {
+                0 => { false }
+                _ => {
+                    for (order, (path, hash)) in metas.into_iter().enumerate() {
+                        // println!("{:?}", path);
+                        bar.update(1).unwrap();
+                        entities.0.insert(Entity { file_name: path, file_hash: hash, embeddings: tensor.slice(s![order,..]).to_vec() });
+                    };
                     true
                 }
-            } {}
-            true
+            }
         }
+        Err(_) => { true }
     } {}
-    for future in futures {
-        save_emb(future.await);
-    }
-    face_embeddings.close().unwrap();
-    println!("fin inference");
-    // sender.send((Array::default([0]).into_dyn(), vec![])).unwrap();
+    entities
 }
-
-fn main() {
-    // let model_hash = std::str::from_utf8(model_hash.as_slice()).unwrap();
-    let (decode_sender, inference_receiver) = mpsc::sync_channel(100);
-
-    // return;
+#[tokio::main]
+async fn main() {
     let model_hash = Sha256::digest(FACE_FEATURE_MODEL).to_ascii_lowercase().into_iter().map(|v| format!("{:02X}", v)).collect::<String>();
-    let face_embeddings_cache = hdf5_metno::File::append(data_dir().join("face_embeddings.hdf5")).unwrap();
-
-    let mut all_files = vec![];
-    let model_cache_group = match face_embeddings_cache.group(model_hash.as_str()) {
-        Ok(cache_group) => { cache_group }
-        Err(_) => { face_embeddings_cache.create_group(model_hash.as_str()).unwrap() }
-    };
+    let entities: Entities = if data_dir().join("embeddings_cache").join(format!("model_{model_hash}.bin")).exists() {
+        let mut cache = Vec::new();
+        File::open(data_dir().join("embeddings_cache").join(format!("model_{model_hash}.bin"))).unwrap().read_to_end(&mut cache).unwrap();
+        bincode::decode_from_slice(cache.as_slice(), config::standard()).unwrap().0
+    } else { Entities(HashSet::new()) };
+    let mut all_files = Vec::new();
     for member_dir in data_dir().join("face_cropped").read_dir().unwrap() {
         let member_dir = member_dir.unwrap();
-        match model_cache_group.group(member_dir.file_name().clone().to_str().unwrap()) {
-            Ok(member_cache_group) => { member_cache_group }
-            Err(_) => { model_cache_group.create_group(member_dir.file_name().clone().to_str().unwrap()).unwrap() }
-        };
-        for image_file in member_dir.path().read_dir().unwrap() {
-            let file_path = image_file.unwrap();
+        let code = |file_path: DirEntry| async move {
             let path = file_path.path();
-            all_files.push(path);
+            let mut buf = Vec::new();
+            tokio::fs::File::open(&path).await.unwrap().read_to_end(&mut buf).await.unwrap();
+            let hash = XxHash3_128::oneshot(buf.as_slice());
+            (buf, Entity { file_name: path.to_str().unwrap().to_owned(), file_hash: hash, embeddings: vec![] })
+        };
+        let future = member_dir.path().read_dir().unwrap().map(|file_path| {
+            let file_path = file_path.unwrap();
+            tokio::spawn(code(file_path))
         }
+        ).collect::<Vec<_>>();
+        join_all(future).await.into_iter().for_each(|v| {
+            let (buf, entity) = v.unwrap();
+            match entities.0.contains(&entity) {
+                false => {
+                    all_files.push((entity.file_name, buf, entity.file_hash))
+                }
+                _ => {}
+            }
+        });
+
         // if member_dir.file_name().to_str().unwrap() == "上國料萌衣" { break; };
     }
-    let all_files = all_files.into_par_iter().map(|file_name| {
-        let mut file_buf = vec![];
-        File::open(file_name.clone()).unwrap().read_to_end(&mut file_buf).unwrap();
-        (Sha256::digest(file_buf).to_ascii_lowercase().into_iter().map(|v| format!("{:02X}", v)).collect::<String>(), file_name)
-    }).collect::<Vec<_>>();
-    let all_files = all_files.iter().filter_map(|(hash, path)| {
-        match face_embeddings_cache.group(model_hash.as_str()).unwrap().
-            group(path.clone().parent().unwrap().file_name().unwrap().to_str().unwrap()).unwrap()
-            .dataset(path.file_name().clone().unwrap().to_str().unwrap()) {
-            Ok(dataset) => {
-                match dataset.attr("hash") {
-                    Ok(data_hash) => {
-                        let stored_hash = String::from_utf8(data_hash.read_raw::<u8>().unwrap()).unwrap();
-                        if stored_hash == hash.clone() {
-                            return None;
-                        }
-                    }
-                    Err(_) => {}
-                }
-            }
-            Err(_) => {}
-        }
-        Some((path.clone(), hash.clone()))
-    }).collect::<Vec<_>>();
-    face_embeddings_cache.close().unwrap();
-    let file_len = all_files.len();
-    let joiner = std::thread::spawn(move || {
-        block_on(inference(inference_receiver, file_len))
-    });
-    // let thread_pool = ThreadPoolBuilder::new().num_threads(16).build().unwrap();
-    let _ = all_files.chunks(BATCH_SIZE).collect::<Vec<_>>().into_par_iter().map(|file_names| {
+
+    let (decode_sender, inference_receiver) = mpsc::sync_channel(100);
+    let (inference_sender, collector_receiver) = mpsc::channel();
+
+
+    let joiner_1 = tokio::spawn(inference(inference_receiver, inference_sender));
+    let proc_len = all_files.len();
+    let joiner_2 = std::thread::spawn(move || { collector(collector_receiver, entities, proc_len) });
+
+    let _ = all_files.chunks(BATCH_SIZE).collect::<Vec<_>>().into_par_iter().for_each(|file_names| {
         let mut decompressor = Decompressor::new().unwrap();
         let mut resizer = fast_image_resize::Resizer::new();
         unsafe { resizer.set_cpu_extensions(fast_image_resize::CpuExtensions::Avx2); }
         let mut tensor = Array4::zeros([file_names.len(), 3, INFERENCE_SIZE, INFERENCE_SIZE]);
 
-        for (order, file) in file_names.iter().enumerate() {
-            let mut fp = File::open(file.clone().0).unwrap();
-            let mut bin = Vec::with_capacity(file.clone().0.metadata().unwrap().len() as usize);
-            fp.read_to_end(&mut bin).unwrap();
-            let header = decompressor.read_header(&bin).unwrap();
+        for (order, (path, buf, hash)) in file_names.iter().enumerate() {
+            let header = decompressor.read_header(&buf).unwrap();
             let mut decoded = Image {
                 pixels: vec![0; header.height * header.width * DECODE_FORMAT.size()],
                 width: header.width,
@@ -166,7 +197,7 @@ fn main() {
                 format: DECODE_FORMAT,
             };
 
-            decompressor.decompress(&bin, decoded.as_deref_mut()).unwrap();
+            decompressor.decompress(&buf, decoded.as_deref_mut()).unwrap();
             let decoded = fir_Image::from_vec_u8(
                 decoded.width as u32, decoded.height as u32, decoded.pixels, PixelType::U8x3,
             ).unwrap();
@@ -184,8 +215,12 @@ fn main() {
         }
         let tensor = Tensor::from_array(tensor).unwrap();
         // println!("decode_sender.send");
-        decode_sender.send((tensor, file_names.to_vec())).unwrap();
-    }).collect::<Vec<_>>();
+        decode_sender.send((tensor, file_names.iter().map(|(path, _, hash)| { (path.clone(), hash.clone()) }).collect::<Vec<_>>())).unwrap();
+    });
     decode_sender.send((Tensor::from_array(array![[[[0.0]]]]).unwrap(), vec![])).unwrap();
-    joiner.join().unwrap();
+    joiner_1.await.unwrap();
+    File::create(data_dir().join("embeddings_cache").join(format!("model_{model_hash}.bin"))).unwrap().write_all({
+        bincode::encode_to_vec(joiner_2.join().unwrap(), config::standard()).unwrap().as_slice()
+    }).unwrap();
+
 }

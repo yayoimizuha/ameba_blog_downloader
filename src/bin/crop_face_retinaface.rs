@@ -17,7 +17,7 @@ use futures::future::{join_all, select_all};
 use futures::FutureExt;
 use futures::stream::SelectAll;
 use ndarray::{arr1, arr2, array, Array, Array4, IxDyn};
-use ort::session::{InferenceFut, NoSelectedOutputs, Session};
+use ort::session::{InferenceFut, NoSelectedOutputs, RunOptions, Session};
 use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
 use image::{Rgb, RgbImage};
 use image::imageops::{crop_imm};
@@ -43,59 +43,101 @@ static INFERENCE_SIZE: usize = 640;
 
 static MODEL_PATH: &str = r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Export\onnx_dest\retinaface_resnet_fused_fp16_with_fp32_io.onnx";
 
+// async fn inference(receiver: Receiver<(Tensor<f32>, Vec<PathBuf>)>, sender: SyncSender<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>) {
+//     ort::init().commit().unwrap();
+//     let mut model = Session::builder().unwrap()
+//         .with_execution_providers([
+//             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
+//         ]).unwrap()
+//         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
+//         .commit_from_file(MODEL_PATH).unwrap();
+//     let futures = RefCell::new(VecDeque::new());
+//     let extract_tensor = |tensor: &Value| tensor.try_extract_array::<f32>().unwrap().view().to_owned().mapv(|v| v);
+//     let extract_output = async |model_output: InferenceFut, shape: Vec<i64>, path_vec: Vec<PathBuf>| {
+//         let infer_out = model_output.await.unwrap();
+//         let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract_tensor(infer_out.get(label).unwrap()));
+//         sender.send((confidence, loc, landmark, shape.iter().map(|&v| v as usize).collect::<Vec<_>>(), path_vec)).unwrap();
+//     };
+//     let opt = RunOptions::new().unwrap();
+// 
+//     while if futures.borrow().len() > 15 {
+//         let mut pop_vec = vec![];
+//         for _ in 0..7 {
+//             let (model_out, shape, path_vec) = futures.borrow_mut().pop_front().unwrap();
+//             // extract_output(model_out, shape, path_vec).await;
+//             pop_vec.push(extract_output(model_out, shape, path_vec));
+//         }
+//         join_all(pop_vec).await;
+//         true
+//     } else {
+//         match receiver.try_recv() {
+//             Ok((tensor, path_vec)) => {
+//                 if path_vec.is_empty() { false } else {
+//                     let tensor_shape = tensor.shape().clone();
+//                     futures.borrow_mut().push_back((model.run_async(inputs! {"input"=>tensor}, &opt).unwrap(), tensor_shape.to_vec(), path_vec));
+//                     true
+//                 }
+//             }
+//             Err(_) => {
+//                 while match futures.borrow_mut().pop_front() {
+//                     None => { false }
+//                     Some((model_out, shape, path_vec)) => {
+//                         extract_output(model_out, shape, path_vec).await;
+//                         true
+//                     }
+//                 } {}
+//                 true
+//             }
+//         }
+//     } {}
+//     while match futures.borrow_mut().pop_front() {
+//         None => { false }
+//         Some((model_out, shape, path_vec)) => {
+//             extract_output(model_out, shape, path_vec).await;
+//             true
+//         }
+//     } {}
+// }
 async fn inference(receiver: Receiver<(Tensor<f32>, Vec<PathBuf>)>, sender: SyncSender<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>) {
     ort::init().commit().unwrap();
-    let model = Session::builder().unwrap()
+    let mut model = Session::builder().unwrap()
         .with_execution_providers([
             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
         ]).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
         .commit_from_file(MODEL_PATH).unwrap();
-    let futures = RefCell::new(VecDeque::new());
-    let extract_tensor = |tensor: &Value| tensor.try_extract_tensor::<f32>().unwrap().view().to_owned().mapv(|v| v);
-    let extract_output = async |model_output: InferenceFut<NoSelectedOutputs>, shape: Vec<i64>, path_vec: Vec<PathBuf>| {
-        let infer_out = model_output.await.unwrap();
-        let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract_tensor(infer_out.get(label).unwrap()));
-        sender.send((confidence, loc, landmark, shape.iter().map(|&v| v as usize).collect::<Vec<_>>(), path_vec)).unwrap();
-    };
 
-    while if futures.borrow().len() > 15 {
-        let mut pop_vec = vec![];
-        for _ in 0..7 {
-            let (model_out, shape, path_vec) = futures.borrow_mut().pop_front().unwrap();
-            // extract_output(model_out, shape, path_vec).await;
-            pop_vec.push(extract_output(model_out, shape, path_vec));
+    let extract_tensor = |tensor: &Value| tensor.try_extract_array::<f32>().unwrap().to_owned();
+    let opt = RunOptions::new().unwrap();
+
+    // This loop processes one inference at a time. It waits to receive a tensor,
+    // runs inference, and crucially `.await`s the result immediately. This releases the
+    // mutable borrow on `model`, allowing the next loop iteration to borrow it again.
+    while let Ok((tensor, path_vec)) = receiver.recv() {
+        // The sending thread signals termination with an empty `path_vec`.
+        if path_vec.is_empty() {
+            break;
         }
-        join_all(pop_vec).await;
-        true
-    } else {
-        match receiver.try_recv() {
-            Ok((tensor, path_vec)) => {
-                if path_vec.is_empty() { false } else {
-                    let tensor_shape = tensor.shape().unwrap().clone();
-                    futures.borrow_mut().push_back((model.run_async(inputs! {"input"=>tensor}.unwrap()).unwrap(), tensor_shape, path_vec));
-                    true
-                }
-            }
-            Err(_) => {
-                while match futures.borrow_mut().pop_front() {
-                    None => { false }
-                    Some((model_out, shape, path_vec)) => {
-                        extract_output(model_out, shape, path_vec).await;
-                        true
-                    }
-                } {}
-                true
-            }
+
+        let shape = tensor.shape().iter().map(|&v| v as usize).collect::<Vec<_>>();
+
+        // The core of the fix: call `run_async` and `await` it in the same expression.
+        let infer_out = model.run_async(inputs! {"input" => tensor}, &opt)
+            .unwrap()
+            .await
+            .unwrap();
+
+        // Extract results from the completed inference.
+        let [confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| {
+            extract_tensor(infer_out.get(label).unwrap())
+        });
+
+        // Send the results to the post-processing thread.
+        if sender.send((confidence, loc, landmark, shape, path_vec)).is_err() {
+            // The receiver has been dropped, so we can stop processing.
+            break;
         }
-    } {}
-    while match futures.borrow_mut().pop_front() {
-        None => { false }
-        Some((model_out, shape, path_vec)) => {
-            extract_output(model_out, shape, path_vec).await;
-            true
-        }
-    } {}
+    }
 }
 fn calc_tilt(landmarks: [[f32; 2]; 5]) -> f32 {
     let eye_center = [(landmarks[0][0] + landmarks[1][0]) / 2.0, (landmarks[0][1] + landmarks[1][1]) / 2.0];
@@ -168,7 +210,7 @@ fn postprocess(model_output_receiver: Receiver<(Array<f32, IxDyn>, Array<f32, Ix
 
         let faces_vec = detector.post_process(confidence, loc, landmark, input_shape).unwrap();
         let member_dirs = paths.clone().into_iter().map(|path| path.parent().unwrap().file_name().unwrap().to_os_string()).unique().collect::<Vec<_>>();
-        let export_base = PathBuf::from(r"C:\Users\tomokazu\すぐ消す\export");
+        let export_base = data_dir().join("face_cropped");
         let _ = member_dirs.iter().map(|member_dir| if !export_base.join(member_dir).exists() { fs::create_dir_all(export_base.join(member_dir)).unwrap(); }).collect::<Vec<_>>();
         thread_pool.install(|| {
             let _ = faces_vec.clone().iter().zip(paths.clone()).map(|(faces, path)| {

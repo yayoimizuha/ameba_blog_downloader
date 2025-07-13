@@ -1,10 +1,11 @@
-use itertools::Itertools;
-use std::fs;
-use std::time::Instant;
 // use itertools::Itertools;
 // use std::any::type_name;
 use ameba_blog_downloader::data_dir;
+use itertools::Itertools;
+use std::fs;
+use std::time::Instant;
 use zerocopy::IntoBytes;
+
 // static CHECK_ARRAY: fn(&[u8], &[u8]) -> bool = |right: &[u8], left: &[u8]| right.iter().zip_eq(left).all(|(a, b)| a == b);
 
 #[allow(unused_macros)]
@@ -84,13 +85,14 @@ impl IfdDtype {
 
 fn main() {
     // let file = include_bytes!("test.jpg");
-    parse_jpeg(include_bytes!("test.jpg"));
+    // parse_jpeg(include_bytes!("test.jpg"));
     let image_dir = data_dir().join("blog_images").read_dir().unwrap().map(|dir| dir.unwrap().path().read_dir().unwrap().into_iter().map(|file| file.unwrap().path())).flatten().collect::<Vec<_>>();
     let start = Instant::now();
     let _ = image_dir
         .into_iter()
+        .take(1)
         .map(|file| {
-            // println!("{}", file.to_str().unwrap());
+            println!("{}", file.to_str().unwrap());
             parse_jpeg(&*fs::read(file).unwrap())
         })
         .collect::<Vec<_>>();
@@ -109,7 +111,7 @@ fn main() {
     //
     // println!("{}", u16::from_be_bytes(<[u8; 2]>::try_from(&file[ptr..ptr + 2]).unwrap()));
 }
-static LOG_LEVEL: i64 = 1; // 2~5
+static LOG_LEVEL: i64 = 5; // 2~5
 fn parse_jpeg(file: &[u8]) {
     let mut ptr = 0;
     #[allow(unused_assignments)]
@@ -133,7 +135,7 @@ fn parse_jpeg(file: &[u8]) {
                 ptr += 2;
             }
             [0xFF, 0xD9, ..] => {
-                print_indent!(0, 1, "EOI (End Of Image [FF D8]) detected. @ {:#08X}", ptr);
+                print_indent!(0, 1, "EOI (End Of Image [FF D9]) detected. @ {:#08X}", ptr);
                 break;
             }
             [0xFF, 0xDD, later @ ..] => {
@@ -273,20 +275,44 @@ fn parse_jpeg(file: &[u8]) {
                 let spectral_shift = later[5 + component_count as usize * 2] & 0xFF;
                 print_indent!(1, 2, "spectral shift: {spectral_shift}");
                 // ptr += 2 + segment_size as usize;
-                for pos in segment_size as usize..later.len() {
-                    if later[pos] == 0xFF {
-                        match later[pos + 1] {
-                            0x00 => {}
-                            _rst_id @ 0xD0..0xD8 => {
-                                // println!("\tRST{} marker @ {:#08X} detected. skip...", _rst_id - 0xD0, ptr + 2 + pos);
-                            }
-                            _ => {
-                                ptr += 2 + pos;
-                                break;
+                let mcus = [later[segment_size as usize..].windows(2).filter_map(|window| {
+                    let (a, b) = (window[0], window[1]);
+                    match a == 0xFF {
+                        true => {
+                            match b {
+                                0x00 => Some(0xFF),
+                                _rst_id @ 0xD0..0xD8 => {
+                                    println!("\tRST{} marker detected. skip...", _rst_id - 0xD0);
+                                    None
+                                }
+                                0xD9 => {
+                                    println!("EOI (End of Image [FF D9]) detected.");
+                                    None
+                                },
+                                _ => panic!()
                             }
                         }
+                        false => { Some(a) }
                     }
-                }
+                }).collect::<Vec<_>>(), vec![*later.last().unwrap()]].concat();
+                ptr +=  later.len();
+                // for pos in segment_size as usize..later.len() {
+                //     if later[pos] == 0xFF {
+                //         match later[pos + 1] {
+                //             0x00 => {}
+                //             _rst_id @ 0xD0..0xD8 => {
+                //                 println!("\tRST{} marker @ {:#08X} detected. skip...", _rst_id - 0xD0, ptr + 2 + pos);
+                //             }
+                //             0xD9 => {
+                //                 break
+                //             }
+                //             _ => {
+                //                 ptr += 2 + pos;
+                //                 break;
+                //             }
+                //         }
+                //     }
+                // }
             }
             [0xFF, app_id @ 0xE0..=0xEF, later @ ..] => {
                 print_indent!(0, 1, "APP{0} (Application type {0} segment [FF {app_id:02X}]) detected. @ {1:#08X}", app_id - 0xE0, ptr);
@@ -300,7 +326,7 @@ fn parse_jpeg(file: &[u8]) {
                 print_indent!(1, 2, "segment size: {}", segment_size);
                 let mut dqt_ptr = 2;
                 loop {
-                    let quantize_precision = later[dqt_ptr] >> 4;
+                    let quantize_precision = (later[dqt_ptr] & 0xF0) >> 4;
                     print_indent!(2, 3, "quantize precision: {}", quantize_precision);
                     let quantize_table_identifier = later[dqt_ptr] & 0x0F;
                     print_indent!(2, 3, "quantize table id: {}", quantize_table_identifier);
