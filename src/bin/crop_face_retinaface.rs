@@ -138,8 +138,9 @@ async fn inference(
         .unwrap()
         .with_execution_providers([
             TensorRTExecutionProvider::default()
+                .with_engine_cache(true)
                 .with_fp16(true)
-                .with_int8(true)
+                .with_engine_cache_path("trt_cache")
                 .build()
                 .error_on_failure(),
             // OpenVINOExecutionProvider::default()
