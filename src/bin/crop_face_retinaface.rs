@@ -26,7 +26,7 @@ use once_cell::sync::Lazy;
 use ort::ep::TensorRTExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::session::{RunOptions, Session};
+use ort::session::Session;
 use ort::value::{Tensor, Value};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -202,10 +202,9 @@ fn build_trt_session() -> Session {
 }
 
 /// テンソルを推論し、(confidence, bbox, landmark) を返す
-async fn run_model(
+fn run_model(
     model: &mut Session,
     tensor: Tensor<f32>,
-    opt: &RunOptions,
 ) -> (
     ndarray::Array<f32, ndarray::IxDyn>,
     ndarray::Array<f32, ndarray::IxDyn>,
@@ -213,9 +212,7 @@ async fn run_model(
 ) {
     let extract = |v: &Value| v.try_extract_array::<f32>().unwrap().to_owned();
     let out = model
-        .run_async(inputs! {"input" => tensor}, opt)
-        .unwrap()
-        .await
+        .run(inputs! {"input" => tensor})
         .unwrap();
     (
         extract(out.get("confidence").unwrap()),
@@ -258,7 +255,6 @@ async fn inference_loop(
     ameba_blog_downloader::init_ort();
 
     let mut model = build_trt_session();
-    let opt = RunOptions::new().unwrap();
 
     // post_process 用の検出器（Session はメタデータ参照のみ）
     let detector = RetinaFaceFaceDetector {
@@ -298,7 +294,7 @@ async fn inference_loop(
         } else {
             let (conf, loc, lm) = if miss_indices.len() == paths.len() {
                 debug!("バッチ全ミス ({} 枚)、フル推論実行", paths.len());
-                run_model(&mut model, tensor, &opt).await
+                run_model(&mut model, tensor)
             } else {
                 debug!(
                     "バッチ部分キャッシュ (ヒット {}, ミス {})、部分推論実行",
@@ -306,7 +302,7 @@ async fn inference_loop(
                     miss_indices.len()
                 );
                 let miss_tensor = build_miss_tensor(&tensor, &miss_indices);
-                run_model(&mut model, miss_tensor, &opt).await
+                run_model(&mut model, miss_tensor)
             };
 
             let miss_shape = {
