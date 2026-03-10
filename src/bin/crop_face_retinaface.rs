@@ -563,24 +563,28 @@ fn decode_and_resize(
 /// リサイズ済み画像群から NCHW テンソル (0-1 正規化, ゼロパディング) を構築する
 fn build_padded_tensor(images: &[FirImage]) -> Array4<f32> {
     let n = images.len();
-    let mut tensor = vec![0.0f32; n * INFERENCE_SIZE * INFERENCE_SIZE * 3];
+    let stride = INFERENCE_SIZE * INFERENCE_SIZE * 3;
+    let mut tensor = vec![0.0f32; n * stride];
 
-    for (i, img) in images.iter().enumerate() {
-        let w = img.width() as usize;
-        let h = img.height() as usize;
-        let buf = img.buffer();
-        let base = i * INFERENCE_SIZE * INFERENCE_SIZE * 3;
-        for y in 0..h {
-            let dst_start = base + y * INFERENCE_SIZE * 3;
-            let src_start = y * w * 3;
-            for (dst, &src) in tensor[dst_start..dst_start + w * 3]
-                .iter_mut()
-                .zip(&buf[src_start..src_start + w * 3])
-            {
-                *dst = src as f32 / 255.0;
+    // 画像ごとのスライスに分割して並列書き込み
+    tensor
+        .par_chunks_mut(stride)
+        .zip(images.par_iter())
+        .for_each(|(slot, img)| {
+            let w = img.width() as usize;
+            let h = img.height() as usize;
+            let buf = img.buffer();
+            for y in 0..h {
+                let dst_start = y * INFERENCE_SIZE * 3;
+                let src_start = y * w * 3;
+                for (dst, &src) in slot[dst_start..dst_start + w * 3]
+                    .iter_mut()
+                    .zip(&buf[src_start..src_start + w * 3])
+                {
+                    *dst = src as f32 / 255.0;
+                }
             }
-        }
-    }
+        });
 
     Array4::from_shape_vec((n, INFERENCE_SIZE, INFERENCE_SIZE, 3), tensor)
         .unwrap()
