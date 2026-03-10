@@ -28,7 +28,7 @@ static INFERENCE_SIZE: usize = 112;
 static FACE_FEATURE_MODEL: &[u8] = include_bytes!(r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Export\onnx_dest\arcface_unpg_f16_with_fp32_io.onnx");
 
 async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(PathBuf, String)>)>, file_count: usize) {
-    ort::init().commit().unwrap();
+    ameba_blog_downloader::init_ort();
     let model_hash = Sha256::digest(FACE_FEATURE_MODEL).to_ascii_lowercase().into_iter().map(|v| format!("{:02X}", v)).collect::<String>();
     let model = Session::builder().unwrap()
         .with_execution_providers([

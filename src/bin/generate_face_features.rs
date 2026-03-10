@@ -81,7 +81,7 @@ static FACE_FEATURE_MODEL: &[u8] = include_bytes!(r"C:\Users\tomokazu\PycharmPro
 //     sender.send((Array::default([0]).into_dyn(), vec![])).unwrap();
 // }
 async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(String, u128)>)>, sender: Sender<(Array<f32, IxDyn>, Vec<(String, u128)>)>) {
-    ort::init().commit().unwrap();
+    ameba_blog_downloader::init_ort();
     let mut model = Session::builder().unwrap()
         .with_execution_providers([
             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()

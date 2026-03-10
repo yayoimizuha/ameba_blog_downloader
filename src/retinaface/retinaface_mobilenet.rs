@@ -8,7 +8,7 @@ use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, 
 use num_traits::{AsPrimitive, FromPrimitive, ToPrimitive};
 use ort::inputs;
 use ort::session::{Session, builder::GraphOptimizationLevel};
-use ort::tensor::PrimitiveTensorElementType;
+
 use ort::value::{Tensor, Value};
 use tracing::debug;
 use  zune_image::codecs::qoi::zune_core::options::DecoderOptions;
@@ -16,6 +16,8 @@ use zune_image::image::Image;
 // use zune_jpeg::JpegDecoder;
 // use zune_jpeg::zune_core::bytestream::ZCursor;
 // use zune_image::image::Image;
+
+use crate::retinaface::nms_copy::nms;
 
 use super::found_face::FoundFace;
 
@@ -31,7 +33,7 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     //     image
     // };
     // // resized_image.save("prepare.jpg").unwrap();
-    let decoder = Image::read(&image, DecoderOptions::default()).unwrap();
+    let decoder = Image::read(std::io::Cursor::new(&image), DecoderOptions::default()).unwrap();
     let (width, height) = decoder.dimensions();
     // let (width, height) = match decoder.dimensions() {
     //     None => { return Err(anyhow!("dimension error")); }
@@ -121,45 +123,6 @@ fn decode_landmark(pre: Array<f32, Ix2>, priors: Array<f32, Ix2>, variances: [f3
                 ]).unwrap()
 }
 
-fn nms_impl(boxes: Array<f32, Ix2>, scores: Array<f32, Ix1>, nms_threshold: f32) -> Vec<usize> {
-    let x1 = boxes.slice(s![..,0]).to_owned();
-    let y1 = boxes.slice(s![..,1]).to_owned();
-    let x2 = boxes.slice(s![..,2]).to_owned();
-    let y2 = boxes.slice(s![..,3]).to_owned();
-
-    let areas = (x2.clone() - x1.clone()).add(1.) * (y2.clone() - y1.clone()).add(1.);
-    let mut order = scores.iter().enumerate().sorted_by(|a, b| b.1.partial_cmp(a.1).unwrap()).map(|x| x.0).collect::<Vec<_>>();
-
-    let mut keep = vec![];
-
-    let np_maximum = |_x1: f32, _x2: Array<f32, Ix1>| -> Array<f32, Ix1> {
-        _x2.mapv(|_x2_val| if _x2_val > _x1 { _x2_val } else { _x1 })
-    };
-    let np_minimum = |_x1: f32, _x2: Array<f32, Ix1>| -> Array<f32, Ix1> {
-        _x2.mapv(|_x2_val| if _x2_val < _x1 { _x2_val } else { _x1 })
-    };
-    while order.len() > 0 {
-        let i = order[0];
-        keep.push(i);
-
-        let xx1 = np_maximum(x1[[i]], x1.select(Axis(0), &order[1..]));
-        let yy1 = np_maximum(y1[[i]], y1.select(Axis(0), &order[1..]));
-        let xx2 = np_minimum(x2[[i]], x2.select(Axis(0), &order[1..]));
-        let yy2 = np_minimum(y2[[i]], y2.select(Axis(0), &order[1..]));
-
-        let w = np_maximum(0.0, (xx2 - xx1).add(1.));
-        let h = np_maximum(0.0, (yy2 - yy1).add(1.));
-
-        let inter = w * h;
-        let ovr = inter.clone() / (areas.select(Axis(0), &order[1..]).add(areas[[i]]) - inter.clone());
-
-        let indices = ovr.iter().enumerate().filter(|(_, val)| val < &&nms_threshold).map(|(order, _)| order).collect::<Vec<_>>();
-
-        order = arr1(&*order).select(Axis(0), &*indices.iter().map(|x| x + 1).collect::<Vec<_>>()).to_vec();
-    }
-    keep
-}
-
 
 pub fn infer(session: &mut Session, raw_image: Array4<f32>) -> Result<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>)> {
     const _MAX_SIZE: usize = 640;
@@ -229,7 +192,7 @@ pub fn post_process(confidence: Array<f32, IxDyn>, loc: Array<f32, IxDyn>, landm
         scores = scores.select(Axis(0), &*order);
 
 
-        let keep = nms_impl(boxes.clone(), scores.clone(), nms_threshold);
+        let keep = nms(&boxes, &scores, nms_threshold);
 
 
         let boxes = boxes.select(Axis(0), &*keep);

@@ -25,7 +25,7 @@ struct YOLO {
 
 impl YOLO {
     fn new() -> YOLO {
-        let model = Session::builder().unwrap()
+        let mut model = Session::builder().unwrap()
             .with_execution_providers([
                 // CPUExecutionProvider::default().build(),
                 OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure(),
@@ -94,7 +94,7 @@ fn preprocessor(preprocessor_receiver: Receiver<Option<Vec<u8>>>, preprocessor_s
 }
 
 fn infer(infer_receiver: Receiver<Option<Array<f32, Ix3>>>) {
-    ort::init().commit().unwrap();
+    ameba_blog_downloader::init_ort();
     let mut model = YOLO::new();
     let mut cont = true;
     while cont {

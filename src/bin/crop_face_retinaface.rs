@@ -99,7 +99,7 @@ static MODEL_PATH: &str = r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Ex
 //     } {}
 // }
 async fn inference(receiver: Receiver<(Tensor<f32>, Vec<PathBuf>)>, sender: SyncSender<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>) {
-    ort::init().commit().unwrap();
+    ameba_blog_downloader::init_ort();
     let mut model = Session::builder().unwrap()
         .with_execution_providers([
             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
@@ -245,7 +245,7 @@ fn postprocess(model_output_receiver: Receiver<(Array<f32, IxDyn>, Array<f32, Ix
 }
 fn main() {
     tracing_subscriber::fmt::init();
-    ort::init().commit().unwrap();
+    ameba_blog_downloader::init_ort();
     let mut all_files = vec![];
     for member_dir in data_dir().join("blog_images").read_dir().unwrap() {
         // for member_dir in PathBuf::from(r"C:\Users\tomokazu\すぐ消す\仮").read_dir().unwrap() {

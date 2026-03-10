@@ -7,6 +7,9 @@ use std::hash::{Hash, Hasher};
 use bincode::{Decode, Encode};
 
 pub mod retinaface;
+
+pub use retinaface::retinaface_common::init_ort;
+
 pub fn data_dir() -> PathBuf {
     match env::var("DATA_PATH") {
         Ok(str) => { PathBuf::from(str) }

@@ -174,6 +174,7 @@ fn theme_curator(theme: String, blog_id: &String) -> String {
         "yamagishi-riko" => "山岸理子",
         "yajima-maimi-official" => "矢島舞美",
         "inaba-manaka" => "稲場愛香",
+        "kamiko-official" => "上國料萌衣",
         _ => theme.as_str(),
     };
     if theme_val == "梁川 奈々美" {

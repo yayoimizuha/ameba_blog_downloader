@@ -1,5 +1,6 @@
 use core::fmt::Debug;
 use std::path::PathBuf;
+use std::sync::Once;
 use anyhow::Error;
 use ndarray::{Array, Array4, IxDyn};
 use num_traits::{AsPrimitive, Float, FromPrimitive, ToPrimitive};
@@ -8,7 +9,7 @@ use once_cell::sync::Lazy;
 use ort::session::Session;
 use ort::execution_providers::{CPUExecutionProvider, CUDAExecutionProvider, TensorRTExecutionProvider, OpenVINOExecutionProvider};
 use ort::session::builder::GraphOptimizationLevel;
-use ort::tensor::PrimitiveTensorElementType;
+
 use crate::project_dir;
 use crate::retinaface::found_face::FoundFace;
 use super::retinaface_resnet;
@@ -17,6 +18,21 @@ pub use super::found_face;
 
 const MOBILENET_ONNX: Lazy<PathBuf> = Lazy::new(|| project_dir().join("src").join("retinaface").join("mobilenet_retinaface.onnx"));
 const RESNET_ONNX: Lazy<PathBuf> = Lazy::new(|| project_dir().join("src").join("retinaface").join("resnet_retinaface.onnx"));
+
+static ORT_INIT: Once = Once::new();
+
+/// ONNX Runtime を初期化する。複数回呼んでも安全（初回のみ実行される）。
+pub fn init_ort() {
+    ORT_INIT.call_once(|| {
+        let dll_path = project_dir()
+            .join("onnxruntime-win-x64-gpu-1.24.1")
+            .join("lib")
+            .join("onnxruntime.dll");
+        ort::init_from(dll_path)
+            .unwrap()
+            .commit();
+    });
+}
 
 
 pub enum ModelKind {
@@ -32,7 +48,6 @@ pub struct RetinaFaceFaceDetector {
 
 impl RetinaFaceFaceDetector {
     pub fn new(model_kind: ModelKind, model_path: PathBuf) -> RetinaFaceFaceDetector {
-        // ort::init_from(r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader\onnxruntime-win-x64-gpu-1.17.3\lib\onnxruntime.dll"#).commit().unwrap();
         let execution_providers = [
             // OpenVINOExecutionProvider::default().build(),
             // OneDNNExecutionProvider::default().build(),
@@ -40,7 +55,7 @@ impl RetinaFaceFaceDetector {
             // CUDAExecutionProvider::default().build(),
             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure(),
             // DirectMLExecutionProvider::default().build(),
-            // CPUExecutionProvider::default().build().error_on_failure(),
+            CPUExecutionProvider::default().build().error_on_failure(),
         ];
         // for execution_provider in &execution_providers {
         //     if execution_provider.is_available().unwrap() {
@@ -48,7 +63,7 @@ impl RetinaFaceFaceDetector {
         //         break;
         //     }
         // }
-        let session_builder = Session::builder().unwrap()
+        let mut session_builder = Session::builder().unwrap()
             .with_execution_providers(execution_providers).unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
             .with_intra_threads(1).unwrap();

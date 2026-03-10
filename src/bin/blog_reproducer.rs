@@ -1,11 +1,9 @@
 use std::env::args;
-use std::fmt::format;
 use std::path::PathBuf;
 use std::sync::Arc;
 use chrono::DateTime;
 use futures::future::join_all;
 use itertools::Itertools;
-use ort::tensor::Utf8Data;
 use regex::{Captures, Regex};
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -104,7 +102,7 @@ async fn main() {
         </tbody>
     </table>
 
-</body>"#).as_utf8_bytes()).await.unwrap();
+</body>"#).as_bytes()).await.unwrap();
         })).await;
         join_all(sqlx::query_as("SELECT DISTINCT article_id,theme,title,article FROM blog WHERE blog_key = ?;").bind(key).fetch_all(&connection).await.unwrap().iter().map(async |(id, theme, title, article): &(i64, String, String, String)| {
             File::create(dest.join(key).join("articles").join(format!("{id}.html"))).await.unwrap().write_all({
@@ -123,7 +121,7 @@ async fn main() {
 <body>
     <h1>{title}</h1>
     {article}
-</body>"#).as_utf8_bytes()
+</body>"#).as_bytes()
             }).await.unwrap();
         }).collect::<Vec<_>>()).await;
     }).collect::<Vec<_>>()).await;

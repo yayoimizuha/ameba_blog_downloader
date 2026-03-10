@@ -19,7 +19,7 @@ serde = { version = "*", features = ["default", "derive"] }
 image = { version = "*", features = ["jpeg", "png"] }
 tracing-subscriber = { version = "*", features = ["fmt", "env-filter"] }
 #rand = { version = "*", features = ["default"] }
-ndarray = { version = "*", features = ["default", "serde", "serde-1"] }
+ndarray = { version = "0.17", features = ["default", "serde"] }
 imageproc = { version = "*", features = ["default"] }
 #include-bytes-zstd = { version = "0.1.0" }
 #wasm-bindgen = { version = "*" }
@@ -30,13 +30,13 @@ console-subscriber = { version = "*" }
 #web-sys = { version = "*", features = ["Crypto", "console"], default-features = true }
 #scraper = { version = "*" }
 chrono = { version = "*", features = ["default", "serde"] }
-html5ever = { version = "0.27.0" }
+html5ever = { version = "0.38.0" }
 markup5ever_rcdom = { version = "*" }
 kdam = { version = "*" }
 filetime = { version = "*" }
 #ndarray-linalg = { version = "*", features = ["default"] }
 #tract-onnx = { version = "*" }
-ndarray-npy = { version = "0.9.1" }
+ndarray-npy = { version = "0.10.0" }
 itertools = { version = "*" }
 powerboxesrs = { version = "*" }
 once_cell = { version = "*" }
@@ -70,7 +70,7 @@ clap = { version = "*" }
 bincode = { version = "*", features = ["serde"] }
 twox-hash = { version = "*", features = ["xxhash3_128"] }
 [dependencies.ort]
-version = "=2.0.0-rc.10"
+version = "=2.0.0-rc.12"
 features = ["tensorrt", "cuda", "load-dynamic", "half", "openvino","ndarray"]
 [profile.relwithdebinfo]
 inherits = "release"

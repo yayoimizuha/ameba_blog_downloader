@@ -1,141 +1,71 @@
-// Largely inspired by lsnms: https://github.com/remydubois/lsnms
-
-use std::cmp::Ordering;
-// use crate::utils;
-use ndarray::{Array1, ArrayView1, ArrayView2, Axis};
-use num_traits::{Num, ToPrimitive};
-const ONE: f64 = 1.0;
-const ZERO: f64 = 0.0;
-pub fn min<N>(a: N, b: N) -> N
-where
-    N: Num + PartialOrd,
-{
-    if a < b {
-        return a;
-    } else {
-        return b;
-    }
-}
-
-pub fn max<N>(a: N, b: N) -> N
-where
-    N: Num + PartialOrd,
-{
-    if a > b {
-        return a;
-    } else {
-        return b;
-    }
-}
-
-
-#[inline(always)]
-pub fn area<N>(bx: N, by: N, bxx: N, byy: N) -> N
-where
-    N: Num + PartialEq + PartialOrd + ToPrimitive,
-{
-    (bxx - bx) * (byy - by)
-}
-
-/// Performs non-maximum suppression (NMS) on a set of bounding boxes using their scores and IoU.
-/// # Arguments
+/// Non-Maximum Suppression (NMS) implementation.
 ///
-/// * `boxes` - A 2D array of shape `(num_boxes, 4)` representing the coordinates in xyxy format of the bounding boxes.
-/// * `scores` - A 1D array of shape `(num_boxes,)` representing the scores of the bounding boxes.
-/// * `iou_threshold` - A float representing the IoU threshold to use for filtering.
-/// * `score_threshold` - A float representing the score threshold to use for filtering.
+/// Ported from the Python/NumPy reference:
+/// <https://github.com/supernotman/RetinaFace_Pytorch/blob/master/utils.py>
 ///
-/// # Returns
-///
-/// A 1D array of shape `(num_boxes,)` representing the indices of the bounding boxes to keep.
-///
-/// # Examples
-///
-/// ```
-/// use ndarray::{arr2, Array1};
-/// use powerboxesrs::nms::nms;
-///
-/// let boxes = arr2(&[[0.0, 0.0, 2.0, 2.0], [1.0, 1.0, 3.0, 3.0]]);
-/// let scores = Array1::from(vec![1.0, 1.0]);
-/// let keep = nms(&boxes, &scores, 0.8, 0.0);
-/// assert_eq!(keep, vec![0, 1]);
-/// ```
-pub fn nms<'a, N, BA, SA>(
-    boxes: BA,
-    scores: SA,
-    iou_threshold: f64,
-    score_threshold: f64,
-) -> Vec<usize>
-where
-    N: Num + PartialEq + PartialOrd + ToPrimitive + Copy + PartialEq + 'a,
-    BA: Into<ArrayView2<'a, N>>,
-    SA: Into<ArrayView1<'a, f64>>,
-{
-    let boxes = boxes.into();
-    let scores = scores.into();
-    assert_eq!(boxes.nrows(), scores.len_of(Axis(0)));
+/// The bounding box format is `[x1, y1, x2, y2]` (top-left and bottom-right corners).
+use ndarray::{Array, Axis, Ix1, Ix2, s};
 
-    let order: Vec<usize> = {
-        let mut indices: Vec<_> = if score_threshold > ZERO {
-            // filter out boxes lower than score threshold
-            scores
-                .iter()
-                .enumerate()
-                .filter(|(_, &score)| score >= score_threshold)
-                .map(|(idx, _)| idx)
-                .collect()
-        } else {
-            (0..scores.len()).collect()
-        };
-        // sort box indices by scores
-        indices.sort_unstable_by(|&a, &b| {
-            scores[b].partial_cmp(&scores[a]).unwrap_or(Ordering::Equal)
+pub fn nms(boxes: &Array<f32, Ix2>, scores: &Array<f32, Ix1>, iou_threshold: f32) -> Vec<usize> {
+    let x1 = boxes.slice(s![.., 0]).to_owned();
+    let y1 = boxes.slice(s![.., 1]).to_owned();
+    let x2 = boxes.slice(s![.., 2]).to_owned();
+    let y2 = boxes.slice(s![.., 3]).to_owned();
+
+    // Compute areas: (x2 - x1 + 1) * (y2 - y1 + 1)
+    let areas = (&x2 - &x1 + 1.0) * (&y2 - &y1 + 1.0);
+
+    // Sort by score in ascending order (we pop from the end → highest first)
+    // This matches: order = np.argsort(score)
+    let mut order = {
+        let mut indices: Vec<usize> = (0..scores.len()).collect();
+        indices.sort_by(|&a, &b| {
+            scores[a]
+                .partial_cmp(&scores[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         indices
     };
 
-    let mut keep: Vec<usize> = Vec::new();
-    let mut suppress = vec![false; order.len()];
+    let mut keep = Vec::new();
 
-    for (i, &idx) in order.iter().enumerate() {
-        if suppress[i] {
-            continue;
-        }
-        keep.push(idx);
-        let box1 = boxes.row(idx);
-        let b1x = box1[0];
-        let b1y = box1[1];
-        let b1xx = box1[2];
-        let b1yy = box1[3];
-        let area1 = powerboxesrs::nms::area(b1x, b1y, b1xx, b1yy);
-        for j in (i + 1)..order.len() {
-            if suppress[j] {
-                continue;
-            }
-            let box2 = boxes.row(order[j]);
-            let b2x = box2[0];
-            let b2y = box2[1];
-            let b2xx = box2[2];
-            let b2yy = box2[3];
+    while !order.is_empty() {
+        // Pick the index with the largest score (last element after ascending sort)
+        let i = *order.last().unwrap();
+        keep.push(i);
 
-            // Intersection-over-union
-            let x = max(b1x, b2x);
-            let y = max(b1y, b2y);
-            let xx = min(b1xx, b2xx);
-            let yy = min(b1yy, b2yy);
-            if x > xx || y > yy {
-                // Boxes are not intersecting at all
-                continue;
-            };
-            // Boxes are intersecting
-            let intersection: N = powerboxesrs::nms::area(x, y, xx, yy);
-            let area2: N = powerboxesrs::nms::area(b2x, b2y, b2xx, b2yy);
-            let union: N = area1 + area2 - intersection;
-            let iou: f64 = intersection.to_f64().unwrap() / union.to_f64().unwrap();
-            if iou > iou_threshold {
-                suppress[j] = true;
-            }
+        // Compare against all remaining candidates (excluding the picked one)
+        let rest = &order[..order.len() - 1];
+        if rest.is_empty() {
+            break;
         }
+
+        let rest_indices: Vec<usize> = rest.to_vec();
+
+        // Compute intersection coordinates
+        let xx1 = x1.select(Axis(0), &rest_indices).mapv(|v| v.max(x1[i]));
+        let yy1 = y1.select(Axis(0), &rest_indices).mapv(|v| v.max(y1[i]));
+        let xx2 = x2.select(Axis(0), &rest_indices).mapv(|v| v.min(x2[i]));
+        let yy2 = y2.select(Axis(0), &rest_indices).mapv(|v| v.min(y2[i]));
+
+        // Compute intersection area: w = max(0, xx2 - xx1 + 1), h = max(0, yy2 - yy1 + 1)
+        let w = (&xx2 - &xx1 + 1.0).mapv(|v| v.max(0.0));
+        let h = (&yy2 - &yy1 + 1.0).mapv(|v| v.max(0.0));
+        let intersection = &w * &h;
+
+        // Compute IoU: intersection / (area_i + area_rest - intersection)
+        let rest_areas = areas.select(Axis(0), &rest_indices);
+        let ratio = &intersection / &(rest_areas + areas[i] - &intersection);
+
+        // Keep only indices where ratio < iou_threshold
+        // This matches: left = np.where(ratio < iou_threshold); order = order[left]
+        order = rest_indices
+            .iter()
+            .zip(ratio.iter())
+            .filter(|(_, &r)| r < iou_threshold)
+            .map(|(&idx, _)| idx)
+            .collect();
     }
+
     keep
 }

@@ -1,22 +1,18 @@
-use ort::value::TensorRef;
 use super::found_face::FoundFace;
 use crate::retinaface::nms_copy::nms;
 use anyhow::Result;
-use core::fmt::Debug;
-use half::f16;
 use itertools::{enumerate, iproduct};
-use ndarray::{arr2, array, concatenate, s, Array, Array1, Array2, Array4, Axis, Ix1, Ix2, Ix4, IxDyn};
+use ndarray::{arr1, arr2, array, concatenate, s, Array, Array1, Array2, Array4, Axis, Ix1, Ix2, Ix4, IxDyn};
 use num_traits::{AsPrimitive, Float, FromPrimitive, Num, ToPrimitive};
 use ort::inputs;
-use ort::session::{builder::GraphOptimizationLevel, Session};
-use ort::sys::{OrtMemType, OrtTypeInfo};
-use ort::tensor::{ArrayExtensions, PrimitiveTensorElementType};
+use ort::session:: Session;
+
 use ort::value::{Tensor, Value};
 use std::ops::{Div, Mul};
 use std::time::Instant;
 use std::f32;
 use tracing::debug;
-// use powerboxesrs::nms::nms;
+
 use zune_image::codecs::bmp::zune_core::options::DecoderOptions;
 use zune_image::image::Image;
 
@@ -48,7 +44,7 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
     //    Some(x) => { x }
     //};
 
-    let decoder = Image::read(&image, DecoderOptions::default())?;
+    let decoder = Image::read(std::io::Cursor::new(&image), DecoderOptions::default())?;
     let (width, height) = decoder.dimensions();
     let decode_vec = &decoder.flatten_to_u8()[0];
     let output_image = Array4::from_shape_fn((1, 3, height, width),
@@ -56,9 +52,9 @@ pub fn transform(image: Vec<u8>/*, _max_size: usize*/) -> Result<Array4<f32>> {
                                                  let order = n * (height * width * 3) + h * (width * 3) + w * (3) + c;
                                                  if order >= width * height * 3 { 0.0 } else {
                                                      match c {
-                                                         0 => (decode_vec[c] as f32 - 0.485 * 255.0) / (0.229 * 255.0),
-                                                         1 => (decode_vec[c] as f32 - 0.456 * 255.0) / (0.224 * 255.0),
-                                                         2 => (decode_vec[c] as f32 - 0.406 * 255.0) / (0.225 * 255.0),
+                                                         0 => (decode_vec[order] as f32 - 0.485 * 255.0) / (0.229 * 255.0),
+                                                         1 => (decode_vec[order] as f32 - 0.456 * 255.0) / (0.224 * 255.0),
+                                                         2 => (decode_vec[order] as f32 - 0.406 * 255.0) / (0.225 * 255.0),
                                                          _ => unreachable!()
                                                      }
                                                  }
@@ -191,7 +187,11 @@ pub fn post_process(confidence: Array<f32, IxDyn>, loc: Array<f32, IxDyn>, landm
     let mut outputs = vec![];
 
     for i in 0..confidence.shape()[0] {
-        let confidence = confidence.softmax(Axis(2));
+        let confidence = {
+            let exp = confidence.mapv(f32::exp);
+            let sum = exp.sum_axis(Axis(2)).insert_axis(Axis(2));
+            exp / sum
+        };
 
         let mut boxes = decode(loc.slice(s![i,..,..]).to_owned(), prior_box.clone(), variance);
         boxes = boxes * scale_bboxes.clone();
@@ -208,7 +208,7 @@ pub fn post_process(confidence: Array<f32, IxDyn>, loc: Array<f32, IxDyn>, landm
         scores = scores.select(Axis(0), &*valid_index);
 
 
-        let keep = nms(&boxes.view(), &scores.mapv(|x| x as f64).view(), nms_threshold, confidence_threshold as f64);
+        let keep = nms(&boxes, &scores, nms_threshold);
 
 
         let mut faces = vec![];
