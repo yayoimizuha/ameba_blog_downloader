@@ -140,7 +140,8 @@ async fn inference(
             TensorRTExecutionProvider::default()
                 .with_fp16(true)
                 .with_int8(true)
-                .build(),
+                .build()
+                .error_on_failure(),
             OpenVINOExecutionProvider::default()
                 .with_device_type("GPU")
                 .with_precision("FP16")
