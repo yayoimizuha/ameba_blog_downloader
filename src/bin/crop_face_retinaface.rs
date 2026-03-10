@@ -15,7 +15,6 @@ use std::thread;
 
 use fast_image_resize::images::Image as FirImage;
 use fast_image_resize::{PixelType, ResizeOptions};
-use futures::executor::block_on;
 use image::imageops::crop_imm;
 use image::{Rgb, RgbImage};
 use imageproc::geometric_transformations::{rotate, Interpolation};
@@ -281,10 +280,10 @@ async fn inference_loop(
         let full_shape: Vec<usize> = tensor.shape().iter().map(|&v| v as usize).collect();
 
         // 各画像のキャッシュを検索
-        let cached: Vec<Option<Vec<FoundFace>>> = image_hashes
-            .iter()
-            .map(|&h| block_on(load_cached_faces(&pool, &model_hash, h)))
-            .collect();
+        let mut cached: Vec<Option<Vec<FoundFace>>> = Vec::with_capacity(image_hashes.len());
+        for &h in &image_hashes {
+            cached.push(load_cached_faces(&pool, &model_hash, h).await);
+        }
 
         let miss_indices: Vec<usize> = cached
             .iter()
@@ -319,12 +318,13 @@ async fn inference_loop(
 
             // キャッシュに保存
             for (order, &orig_idx) in miss_indices.iter().enumerate() {
-                block_on(save_cached_faces(
+                save_cached_faces(
                     &pool,
                     &model_hash,
                     image_hashes[orig_idx],
                     &miss_faces[order],
-                ));
+                )
+                .await;
             }
 
             miss_faces
@@ -629,8 +629,11 @@ fn main() {
     // 推論スレッド起動
     let mh = model_hash.clone();
     let cd = cache_db_path.clone();
-    let inference_handle =
-        thread::spawn(move || block_on(inference_loop(infer_rx, infer_tx, mh, cd)));
+    let inference_handle = thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(inference_loop(infer_rx, infer_tx, mh, cd))
+    });
 
     // クロップ＆エクスポートスレッド起動
     let file_count = all_files.len();
