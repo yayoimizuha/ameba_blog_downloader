@@ -1,3 +1,4 @@
+use std::env::current_dir;
 /// 顔検出テスト: ResNet / MobileNet 両モデルで画像上の顔にバウンディングボックスを描画する
 ///
 /// 使い方:
@@ -10,17 +11,17 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 use image::imageops::FilterType;
+use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::rect::Rect;
 use ort::execution_providers::CPUExecutionProvider;
-use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
 
 use ameba_blog_downloader::project_dir;
-use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
 use ameba_blog_downloader::retinaface::found_face::FoundFace;
+use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
 
 /// 推論用の最大サイズ (長辺がこのサイズに収まるようリサイズ)
 const INFERENCE_SIZE: u32 = 640;
@@ -215,7 +216,7 @@ fn main() {
         resnet_model,
         &original_dynamic,
         &original_image,
-        &parent.join(format!("{stem}_resnet.jpg")),
+        &current_dir().unwrap().as_path().join(format!("{stem}_resnet.jpg")),
     );
 
     println!();
@@ -227,7 +228,7 @@ fn main() {
         mobilenet_model,
         &original_dynamic,
         &original_image,
-        &parent.join(format!("{stem}_mobilenet.jpg")),
+        &current_dir().unwrap().as_path().join(format!("{stem}_mobilenet.jpg")),
     );
 
     println!("\nDone!");
