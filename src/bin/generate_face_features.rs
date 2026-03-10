@@ -1,11 +1,11 @@
-use bincode::{config, Decode, Encode};
+use ameba_blog_downloader::{data_dir, Entities, Entity};
+use bincode::config;
 use fast_image_resize::images::Image as fir_Image;
 use fast_image_resize::{PixelType, ResizeOptions};
 use futures::future::join_all;
-use itertools::Itertools;
 use kdam::{tqdm, BarExt};
 use ndarray::{array, s, Array, Array3, Array4, IxDyn};
-use ort::execution_providers::OpenVINOExecutionProvider;
+use ort::ep::OpenVINOExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::{RunOptions, Session};
@@ -13,16 +13,14 @@ use ort::value::Tensor;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use sha2::{Digest, Sha256};
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::fs::{DirEntry, File};
-use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use tokio::io::AsyncReadExt;
 use turbojpeg::{Decompressor, Image, PixelFormat};
 use twox_hash::XxHash3_128;
-use ameba_blog_downloader::{data_dir, Entities, Entity};
 
 static BATCH_SIZE: usize = 256;
 static DECODE_FORMAT: PixelFormat = PixelFormat::RGB;
@@ -133,7 +131,7 @@ async fn main() {
         unsafe { resizer.set_cpu_extensions(fast_image_resize::CpuExtensions::Avx2); }
         let mut tensor = Array4::zeros([file_names.len(), 3, INFERENCE_SIZE, INFERENCE_SIZE]);
 
-        for (order, (path, buf, hash)) in file_names.iter().enumerate() {
+        for (order, (_path, buf, _hash)) in file_names.iter().enumerate() {
             let header = decompressor.read_header(&buf).unwrap();
             let mut decoded = Image {
                 pixels: vec![0; header.height * header.width * DECODE_FORMAT.size()],

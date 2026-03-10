@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use futures::future::join_all;
 use gcp_access_token::json;
-use itertools::Itertools;
 use kdam::{Bar, BarExt, tqdm};
 use once_cell::sync::Lazy;
 use rand::random;
@@ -124,7 +123,7 @@ async fn main() {
     let articles = sqlx::query_as(format!("SELECT article_id,article_{} FROM processed_blog WHERE article_{} IS NOT NULL AND {}_embedding IS NULL;", TARGET.as_str(), TARGET.as_str(), TARGET.as_str()).as_str())
         .fetch_all(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap().iter().map(|(id, text): &(i64, String)| (*id, text.clone())).collect::<Vec<_>>();
     let mut joins = vec![];
-    let client = reqwest::Client::new();
+    let client = Client::new();
     let progress = Arc::new(Mutex::new(tqdm!(total=articles.len(),desc="get embedding...",animation="ascii",force_refresh=true,leave=false)));
 
     for (article_id, article) in articles {

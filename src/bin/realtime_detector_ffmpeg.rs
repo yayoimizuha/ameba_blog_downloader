@@ -1,23 +1,18 @@
-use std::fs::File;
-use std::io::{BufWriter, Read, Write};
-use std::process::{exit, Command, Stdio};
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender, SyncSender};
-use std::thread;
-use itertools::Itertools;
-use ndarray::{concatenate, s, stack, Array, ArrayView, Axis, Ix3, IxDyn};
-use num_traits::AsPrimitive;
-use ort::execution_providers::OpenVINOExecutionProvider;
+use fast_image_resize::images::Image as fir_Image;
+use fast_image_resize::ResizeAlg::Convolution;
+use fast_image_resize::{CpuExtensions, FilterType, PixelType, ResizeOptions, Resizer};
+use ndarray::{s, stack, Array, Axis, Ix3};
+use ort::ep::OpenVINOExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::session::{RunOptions, Session};
-use rayon::prelude::*;
-use fast_image_resize::images::Image as fir_Image;
-use fast_image_resize::{CpuExtensions, FilterType, IntoImageView, PixelType, ResizeAlg, ResizeOptions, Resizer};
-use fast_image_resize::ResizeAlg::Convolution;
-use image::codecs::png::PngEncoder;
-use image::{ExtendedColorType, ImageEncoder};
+use ort::session::Session;
 use ort::value::Tensor;
+use rayon::prelude::*;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, SyncSender};
+use std::thread;
 
 struct YOLO {
     model: Session,
@@ -105,7 +100,7 @@ fn infer(infer_receiver: Receiver<Option<Array<f32, Ix3>>>) {
                 }
             }
         }
-        let opt = RunOptions::new().unwrap();
+        // let opt = RunOptions::new().unwrap();
         let model_input = inputs! {
                     "images"=>Tensor::from_array(stack(Axis(0),batch.iter().map(|t|t.view()).collect::<Vec<_>>().as_slice()).unwrap()).unwrap()
                 };
@@ -131,7 +126,7 @@ fn main() {
     let width = ffprobe_output["streams"][0]["width"].as_i64().unwrap() as usize;
     let height = ffprobe_output["streams"][0]["height"].as_i64().unwrap() as usize;
     let total_frames = ffprobe_output["streams"][0]["nb_read_packets"].as_str().unwrap().parse::<i64>().unwrap();
-    let frame_rate = ffprobe_output["streams"][0]["r_frame_rate"].as_str().unwrap().to_owned();
+    // let frame_rate = ffprobe_output["streams"][0]["r_frame_rate"].as_str().unwrap().to_owned();
 
     let frame_size = width * height * 4;
 

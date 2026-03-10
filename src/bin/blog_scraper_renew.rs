@@ -147,6 +147,7 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exi
     }).filter_map(|x| x).collect::<Vec<_>>())
 }
 
+//noinspection ALL
 fn theme_curator(theme: String, blog_id: &String) -> String {
     let theme_val = match blog_id.as_str() {
         "risa-ogata" => "小片リサ",

@@ -1,20 +1,18 @@
-use core::fmt::Debug;
-use std::path::PathBuf;
-use std::sync::Once;
 use anyhow::Error;
 use ndarray::{Array, Array4, IxDyn};
-use num_traits::{AsPrimitive, Float, FromPrimitive, ToPrimitive};
 use once_cell::sync::Lazy;
+use ort::ep::{CPUExecutionProvider, OpenVINOExecutionProvider};
+use ort::session::builder::GraphOptimizationLevel;
 #[allow(unused_imports)]
 use ort::session::Session;
-use ort::execution_providers::{CPUExecutionProvider, CUDAExecutionProvider, TensorRTExecutionProvider, OpenVINOExecutionProvider};
-use ort::session::builder::GraphOptimizationLevel;
+use std::path::PathBuf;
+use std::sync::Once;
 
+pub use super::found_face;
+use super::retinaface_mobilenet;
+use super::retinaface_resnet;
 use crate::project_dir;
 use crate::retinaface::found_face::FoundFace;
-use super::retinaface_resnet;
-use super::retinaface_mobilenet;
-pub use super::found_face;
 
 const MOBILENET_ONNX: Lazy<PathBuf> = Lazy::new(|| project_dir().join("src").join("retinaface").join("mobilenet_retinaface.onnx"));
 const RESNET_ONNX: Lazy<PathBuf> = Lazy::new(|| project_dir().join("src").join("retinaface").join("resnet_retinaface.onnx"));
