@@ -1,17 +1,16 @@
-use core::fmt::Debug;
-use std::{f32};
-use std::ops::{Add, Div, Mul};
-use std::time::Instant;
 use anyhow::Result;
 use itertools::{enumerate, iproduct, Itertools};
-use ndarray::{arr1, arr2, Array, array, Array2, Array4, Axis, concatenate, Ix1, Ix2, s, IxDyn};
+use ndarray::{arr1, arr2, array, concatenate, s, Array, Array2, Array4, Axis, Ix1, Ix2, IxDyn};
 use num_traits::{AsPrimitive, FromPrimitive, ToPrimitive};
 use ort::inputs;
-use ort::session::{Session, builder::GraphOptimizationLevel};
+use ort::session::{builder::GraphOptimizationLevel, Session};
+use std::ops::{Add, Div, Mul};
+use std::time::Instant;
+use std::f32;
 
 use ort::value::{Tensor, Value};
 use tracing::debug;
-use  zune_image::codecs::qoi::zune_core::options::DecoderOptions;
+use zune_image::codecs::qoi::zune_core::options::DecoderOptions;
 use zune_image::image::Image;
 // use zune_jpeg::JpegDecoder;
 // use zune_jpeg::zune_core::bytestream::ZCursor;

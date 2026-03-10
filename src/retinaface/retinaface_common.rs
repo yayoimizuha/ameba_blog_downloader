@@ -1,7 +1,7 @@
 use anyhow::Error;
 use ndarray::{Array, Array4, IxDyn};
 use once_cell::sync::Lazy;
-use ort::ep::{CPUExecutionProvider, OpenVINOExecutionProvider};
+use ort::ep::{CPUExecutionProvider, OpenVINOExecutionProvider, TensorRTExecutionProvider};
 use ort::session::builder::GraphOptimizationLevel;
 #[allow(unused_imports)]
 use ort::session::Session;
@@ -22,11 +22,14 @@ static ORT_INIT: Once = Once::new();
 /// ONNX Runtime を初期化する。複数回呼んでも安全（初回のみ実行される）。
 pub fn init_ort() {
     ORT_INIT.call_once(|| {
-        let dll_path = project_dir()
-            .join("onnxruntime-win-x64-gpu-1.24.1")
-            .join("lib")
-            .join("onnxruntime.dll");
-        ort::init_from(dll_path)
+        let lib_path = project_dir().join("onnxruntime-lib").join("lib");
+        #[cfg(target_os = "windows")]
+        let lib_path = lib_path.join("onnxruntime.dll");
+        #[cfg(target_os = "linux")]
+        let lib_path = lib_path.join("libonnxruntime.so");
+        #[cfg(target_os = "macos")]
+        let lib_path = lib_path.join("libonnxruntime.dylib");
+        ort::init_from(lib_path)
             .unwrap()
             .commit();
     });
@@ -49,9 +52,9 @@ impl RetinaFaceFaceDetector {
         let execution_providers = [
             // OpenVINOExecutionProvider::default().build(),
             // OneDNNExecutionProvider::default().build(),
-            // TensorRTExecutionProvider::default().build(),
+            TensorRTExecutionProvider::default().build(),
             // CUDAExecutionProvider::default().build(),
-            OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure(),
+            OpenVINOExecutionProvider::default().with_device_type("GPU").with_precision("FP16").build().error_on_failure(),
             // DirectMLExecutionProvider::default().build(),
             CPUExecutionProvider::default().build().error_on_failure(),
         ];
