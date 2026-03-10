@@ -1,49 +1,57 @@
 use std::collections::HashMap;
-use std::{fs, thread};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::thread;
+
+use fast_image_resize::images::Image as FirImage;
 use fast_image_resize::{PixelType, ResizeOptions};
-use rayon::prelude::*;
-use ameba_blog_downloader::data_dir;
-use turbojpeg::{Decompressor, Image, PixelFormat};
-use fast_image_resize::images::Image as fir_Image;
 use futures::executor::block_on;
-use ndarray::{arr1, arr2, Array, Array4, IxDyn};
-use ort::session::{RunOptions, Session};
-use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
-use image::{Rgb, RgbImage};
 use image::imageops::crop_imm;
-use imageproc::drawing::draw_hollow_polygon_mut;
+use image::{Rgb, RgbImage};
 use imageproc::geometric_transformations::{rotate, Interpolation};
-use imageproc::point::Point;
 use itertools::Itertools;
 use kdam::{tqdm, BarExt};
+use ndarray::{arr1, arr2, Array, Array4, IxDyn};
 use num_traits::FloatConst;
 use ort::ep::{OpenVINOExecutionProvider, TensorRTExecutionProvider};
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::{RunOptions, Session};
 use ort::value::{Tensor, Value};
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::debug;
-use sha2::{Sha256, Digest};
+use turbojpeg::{Decompressor, Image, PixelFormat};
 use twox_hash::xxhash3_128::Hasher as XxHash3_128;
-use serde::{Serialize, Deserialize};
+
 use ameba_blog_downloader::retinaface::found_face::FoundFace;
+use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
+use ameba_blog_downloader::{data_dir, project_dir};
 
-static BATCH_SIZE: usize = 32;
-static LARGE_BATCH_SIZE: usize = BATCH_SIZE * 32;
-static DECODE_FORMAT: PixelFormat = PixelFormat::RGB;
-static INFERENCE_SIZE: usize = 640;
+#[allow(unused_imports)]
+use imageproc::drawing::draw_hollow_polygon_mut;
+#[allow(unused_imports)]
+use imageproc::point::Point;
+use once_cell::sync::Lazy;
 
-static MODEL_PATH: &str = r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Export\onnx_dest\retinaface_resnet_fused_fp16_with_fp32_io.onnx";
+const BATCH_SIZE: usize = 32;
+const LARGE_BATCH_SIZE: usize = BATCH_SIZE * 32;
+const DECODE_FORMAT: PixelFormat = PixelFormat::RGB;
+const INFERENCE_SIZE: usize = 640;
 
-// ---------------------------------------------------------------------------
-// キャッシュ関連
-// ---------------------------------------------------------------------------
+const MODEL_PATH: Lazy<PathBuf> = Lazy::new(|| project_dir().join("retinaface_resnet_fused_fp16_with_fp32_io.onnx"));
 
-/// 推論結果を保存するためのシリアライズ可能な構造体
+// -- Type aliases for channel payloads --
+
+type InferenceBatch = (Tensor<f32>, Vec<PathBuf>, Vec<u128>);
+type PostprocessBatch = (Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>);
+type OriginalImage = (PathBuf, RgbImage, f64);
+
+// -- Cache --
+
 #[derive(Serialize, Deserialize)]
 struct CachedInferenceResult {
     confidence: Vec<f32>,
@@ -54,429 +62,437 @@ struct CachedInferenceResult {
     landmark_shape: Vec<usize>,
 }
 
-/// モデルファイルの SHA-256 ハッシュを計算する（起動時に一度だけ呼ぶ）
 fn compute_model_hash(model_path: &str) -> String {
-    let mut f = File::open(model_path).expect("Failed to open model file for hashing");
+    let mut f = File::open(model_path).expect("Failed to open model file");
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 65536];
     loop {
         let n = f.read(&mut buf).expect("Failed to read model file");
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
     }
     format!("{:x}", hasher.finalize())
 }
 
-/// JPEG バイナリの XXHash3-128 ハッシュを計算する（高速）
 fn compute_image_hash(jpeg_bytes: &[u8]) -> u128 {
     XxHash3_128::oneshot(jpeg_bytes)
 }
 
-/// キャッシュファイルのパスを返す
-///
-/// ファイル名: `<model_hash_prefix16>-<image_hash32hex>.bin`
 fn cache_path(cache_dir: &Path, model_hash: &str, image_hash: u128) -> PathBuf {
     cache_dir.join(format!("{}-{:032x}.bin", &model_hash[..16], image_hash))
 }
 
-/// キャッシュから推論結果を読み込む（存在しなければ None）
 fn load_cache(path: &Path) -> Option<CachedInferenceResult> {
     let data = fs::read(path).ok()?;
-    bincode::serde::decode_from_slice::<CachedInferenceResult, _>(
-        &data,
-        bincode::config::standard(),
-    )
-    .ok()
-    .map(|(v, _)| v)
+    bincode::serde::decode_from_slice::<CachedInferenceResult, _>(&data, bincode::config::standard())
+        .ok()
+        .map(|(v, _)| v)
 }
 
-/// 推論結果をキャッシュに書き込む
 fn save_cache(path: &Path, result: &CachedInferenceResult) {
     if let Ok(encoded) = bincode::serde::encode_to_vec(result, bincode::config::standard()) {
         let _ = fs::write(path, encoded);
     }
 }
 
-// ---------------------------------------------------------------------------
-// 推論スレッド
-// ---------------------------------------------------------------------------
+/// Concatenate a single field from cached results into one ndarray.
+fn concat_cached_field(
+    results: &[CachedInferenceResult],
+    get_data: impl Fn(&CachedInferenceResult) -> &Vec<f32>,
+    get_shape: impl Fn(&CachedInferenceResult) -> &Vec<usize>,
+) -> Array<f32, IxDyn> {
+    let arrays: Vec<_> = results
+        .iter()
+        .map(|r| {
+            let mut shape = vec![1];
+            shape.extend_from_slice(get_shape(r));
+            Array::from_shape_vec(shape, get_data(r).clone()).unwrap()
+        })
+        .collect();
+    let views: Vec<_> = arrays.iter().map(|a| a.view()).collect();
+    ndarray::concatenate(ndarray::Axis(0), &views).unwrap()
+}
 
-/// デコーダスレッドから受け取るメッセージ
-/// - `tensor`: バッチ入力テンソル
-/// - `path_vec`: バッチ内の各画像のパス
-/// - `image_hashes`: 各画像の XXHash3-128 ハッシュ（path_vec と同じ順序）
+fn reconstruct_from_cache(
+    results: &[CachedInferenceResult],
+) -> (Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>) {
+    (
+        concat_cached_field(results, |r| &r.confidence, |r| &r.confidence_shape),
+        concat_cached_field(results, |r| &r.loc, |r| &r.loc_shape),
+        concat_cached_field(results, |r| &r.landmark, |r| &r.landmark_shape),
+    )
+}
+
+// -- Inference thread --
+
 async fn inference(
-    receiver: Receiver<(Tensor<f32>, Vec<PathBuf>, Vec<u128>)>,
-    sender: SyncSender<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>,
+    receiver: Receiver<InferenceBatch>,
+    sender: SyncSender<PostprocessBatch>,
     model_hash: String,
     cache_dir: PathBuf,
 ) {
     ameba_blog_downloader::init_ort();
-    let mut model = Session::builder().unwrap()
+    let mut model = Session::builder()
+        .unwrap()
         .with_execution_providers([
-            TensorRTExecutionProvider::default().with_fp16(true).with_int8(true).build(),
-            OpenVINOExecutionProvider::default().with_device_type("GPU").with_precision("FP16").build().error_on_failure()
-        ]).unwrap()
-        .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
-        .commit_from_file(MODEL_PATH).unwrap();
+            TensorRTExecutionProvider::default()
+                .with_fp16(true)
+                .with_int8(true)
+                .build(),
+            OpenVINOExecutionProvider::default()
+                .with_device_type("GPU")
+                .with_precision("FP16")
+                .build()
+                .error_on_failure(),
+        ])
+        .unwrap()
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .unwrap()
+        .commit_from_file(MODEL_PATH.as_path())
+        .unwrap();
 
-    let extract_tensor = |tensor: &Value| tensor.try_extract_array::<f32>().unwrap().to_owned();
+    let extract = |v: &Value| v.try_extract_array::<f32>().unwrap().to_owned();
     let opt = RunOptions::new().unwrap();
 
-    while let Ok((tensor, path_vec, image_hashes)) = receiver.recv() {
-        // 終了シグナル: path_vec が空
-        if path_vec.is_empty() {
+    while let Ok((tensor, paths, image_hashes)) = receiver.recv() {
+        if paths.is_empty() {
             break;
         }
 
-        let batch_size = path_vec.len();
+        let shape: Vec<usize> = tensor.shape().iter().map(|&v| v as usize).collect();
 
-        // ------------------------------------------------------------------
-        // 1. 各画像のキャッシュ確認
-        // ------------------------------------------------------------------
-        let cached_results: Vec<Option<CachedInferenceResult>> = image_hashes
+        let cached: Vec<Option<CachedInferenceResult>> = image_hashes
             .iter()
             .map(|&h| load_cache(&cache_path(&cache_dir, &model_hash, h)))
             .collect();
 
-        let all_cached = cached_results.iter().all(|r| r.is_some());
+        let all_hit = cached.iter().all(|c| c.is_some());
 
-        // ------------------------------------------------------------------
-        // 2. キャッシュミスがあれば実際に推論を実行する
-        // ------------------------------------------------------------------
-        let (confidence_full, loc_full, landmark_full, shape) = if all_cached {
-            debug!("All {} images in batch are cache hits, skipping inference.", batch_size);
-            // ダミーとして使う shape だけ取得（後で上書き）
-            let s = tensor.shape().iter().map(|&v| v as usize).collect::<Vec<_>>();
-            (None, None, None, s)
+        let (confidence, loc, landmark) = if all_hit {
+            debug!("Batch fully cached ({} images), skipping inference.", paths.len());
+            let results: Vec<_> = cached.into_iter().map(|c| c.unwrap()).collect();
+            reconstruct_from_cache(&results)
         } else {
-            let shape = tensor.shape().iter().map(|&v| v as usize).collect::<Vec<_>>();
-            let infer_out = model.run_async(inputs! {"input" => tensor}, &opt)
+            let out = model
+                .run_async(inputs! {"input" => tensor}, &opt)
                 .unwrap()
                 .await
                 .unwrap();
-            let [confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| {
-                extract_tensor(infer_out.get(label).unwrap())
-            });
-            (Some(confidence), Some(loc), Some(landmark), shape)
+            let confidence = extract(out.get("confidence").unwrap());
+            let loc = extract(out.get("bbox").unwrap());
+            let landmark = extract(out.get("landmark").unwrap());
+
+            // Save cache for misses
+            for (i, (hash, hit)) in image_hashes.iter().zip(cached.iter()).enumerate() {
+                if hit.is_some() {
+                    continue;
+                }
+                let entry = CachedInferenceResult {
+                    confidence: confidence.index_axis(ndarray::Axis(0), i).iter().copied().collect(),
+                    confidence_shape: confidence.shape()[1..].to_vec(),
+                    loc: loc.index_axis(ndarray::Axis(0), i).iter().copied().collect(),
+                    loc_shape: loc.shape()[1..].to_vec(),
+                    landmark: landmark.index_axis(ndarray::Axis(0), i).iter().copied().collect(),
+                    landmark_shape: landmark.shape()[1..].to_vec(),
+                };
+                save_cache(&cache_path(&cache_dir, &model_hash, *hash), &entry);
+            }
+
+            (confidence, loc, landmark)
         };
 
-        // ------------------------------------------------------------------
-        // 3. 推論結果をキャッシュに書き込み、同時に送信用データを組み立てる
-        // ------------------------------------------------------------------
-        // バッチ全体の結果を再構成するための配列を用意する。
-        // キャッシュヒット画像: キャッシュから復元
-        // キャッシュミス画像: 推論結果の対応スライスから取り出す
-        //
-        // 推論結果の形状:
-        //   confidence: [N, num_anchors, 2]
-        //   loc:        [N, num_anchors, 4]
-        //   landmark:   [N, num_anchors, 10]
-        //
-        // ここでは送信用に「バッチ全体の ndarray」を再合成する。
+        if sender.send((confidence, loc, landmark, shape, paths)).is_err() {
+            break;
+        }
+    }
+}
 
-        if all_cached {
-            // 全てキャッシュヒット: キャッシュから ndarray を復元して結合
-            let results: Vec<CachedInferenceResult> = cached_results
-                .into_iter()
-                .map(|r| r.unwrap())
-                .collect();
+// -- Geometry & cropping --
 
-            let (confidence_arr, loc_arr, landmark_arr) =
-                reconstruct_arrays_from_cache(&results);
+fn calc_tilt(landmarks: [[f32; 2]; 5]) -> f32 {
+    let eye_center = [
+        (landmarks[0][0] + landmarks[1][0]) / 2.0,
+        (landmarks[0][1] + landmarks[1][1]) / 2.0,
+    ];
+    let mouth_center = [
+        (landmarks[3][0] + landmarks[4][0]) / 2.0,
+        (landmarks[3][1] + landmarks[4][1]) / 2.0,
+    ];
+    f32::atan2(eye_center[1] - mouth_center[1], eye_center[0] - mouth_center[0])
+}
 
-            if sender.send((confidence_arr, loc_arr, landmark_arr, shape, path_vec)).is_err() {
-                break;
+#[allow(dead_code)]
+fn draw_rect(mut image: RgbImage, scale: f32, faces: &[FoundFace]) -> RgbImage {
+    let inv = 1.0 / scale;
+    for face in faces {
+        let angle = calc_tilt(face.landmarks) + f32::PI() / 2.0;
+        let cx = (face.bbox[0] + face.bbox[2]) * inv / 2.0;
+        let cy = (face.bbox[1] + face.bbox[3]) * inv / 2.0;
+        let rot = arr2(&[[angle.cos(), -angle.sin()], [angle.sin(), angle.cos()]]);
+        let center = arr1(&[cx, cy]);
+        let corners = [
+            arr1(&[face.bbox[0] * inv, face.bbox[1] * inv]),
+            arr1(&[face.bbox[2] * inv, face.bbox[1] * inv]),
+            arr1(&[face.bbox[2] * inv, face.bbox[3] * inv]),
+            arr1(&[face.bbox[0] * inv, face.bbox[3] * inv]),
+        ];
+        let pts: Vec<_> = corners
+            .iter()
+            .map(|c| {
+                let r = rot.dot(&(c - &center)) + &center;
+                Point::new(r[0], r[1])
+            })
+            .collect();
+        draw_hollow_polygon_mut(&mut image, &pts, Rgb([255, 0, 0]));
+    }
+    image
+}
+
+fn crop_faces(image: &RgbImage, scale: f32, faces: &[FoundFace]) -> Vec<RgbImage> {
+    let inv = 1.0 / scale;
+    faces
+        .iter()
+        .filter(|f| f32::max(f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]) * inv >= 100.0)
+        .map(|face| {
+            let angle = calc_tilt(face.landmarks) + f32::PI() / 2.0;
+            let cx = (face.bbox[0] + face.bbox[2]) * inv / 2.0;
+            let cy = (face.bbox[1] + face.bbox[3]) * inv / 2.0;
+            let rotated = rotate(image, (cx, cy), -angle, Interpolation::Bilinear, Rgb([0, 0, 0]));
+            let size = (f32::max(
+                (face.bbox[2] - face.bbox[0]) * inv,
+                (face.bbox[3] - face.bbox[1]) * inv,
+            ) * 1.2) as u32;
+            let half = size as f32 / 2.0;
+            crop_imm(&rotated, (cx - half) as u32, (cy - half) as u32, size, size).to_image()
+        })
+        .collect()
+}
+
+// -- Postprocess thread --
+
+fn postprocess(
+    model_rx: Receiver<PostprocessBatch>,
+    original_rx: Receiver<OriginalImage>,
+    file_count: usize,
+) {
+    let detector = RetinaFaceFaceDetector {
+        session: Session::builder().unwrap().commit_from_file(MODEL_PATH.as_path()).unwrap(),
+        model: ModelKind::ResNet,
+    };
+    let mut originals: HashMap<PathBuf, (RgbImage, f64)> = HashMap::new();
+    let mut bar = tqdm!(total = file_count, disable = false);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(16).build().unwrap();
+    let export_base = data_dir().join("face_cropped");
+
+    for (confidence, loc, landmark, input_shape, paths) in model_rx.iter() {
+        if input_shape.is_empty() {
+            return;
+        }
+
+        // Drain available originals
+        while let Ok((path, image, scale)) = original_rx.try_recv() {
+            originals.insert(path, (image, scale));
+        }
+
+        let faces_vec = detector.post_process(confidence, loc, landmark, input_shape).unwrap();
+
+        // Ensure export directories exist
+        for dir in paths.iter().map(|p| p.parent().unwrap().file_name().unwrap()).unique() {
+            let dest = export_base.join(dir);
+            if !dest.exists() {
+                fs::create_dir_all(&dest).unwrap();
             }
-        } else {
-            // 一部またはすべてキャッシュミス
-            let confidence_full = confidence_full.unwrap();
-            let loc_full = loc_full.unwrap();
-            let landmark_full = landmark_full.unwrap();
+        }
 
-            // キャッシュミス画像を個別にキャッシュ保存
-            for (i, (hash, cached)) in image_hashes.iter().zip(cached_results.iter()).enumerate() {
-                if cached.is_none() {
-                    let conf_slice = confidence_full.index_axis(ndarray::Axis(0), i).to_owned();
-                    let loc_slice = loc_full.index_axis(ndarray::Axis(0), i).to_owned();
-                    let lm_slice = landmark_full.index_axis(ndarray::Axis(0), i).to_owned();
+        // Crop and save in parallel
+        let work: Vec<_> = faces_vec
+            .iter()
+            .zip(&paths)
+            .map(|(faces, path)| {
+                let (image, scale) = &originals[path];
+                (image.clone(), *scale as f32, faces.clone(), path.clone())
+            })
+            .collect();
 
-                    let entry = CachedInferenceResult {
-                        confidence: conf_slice.iter().cloned().collect(),
-                        confidence_shape: conf_slice.shape().to_vec(),
-                        loc: loc_slice.iter().cloned().collect(),
-                        loc_shape: loc_slice.shape().to_vec(),
-                        landmark: lm_slice.iter().cloned().collect(),
-                        landmark_shape: lm_slice.shape().to_vec(),
-                    };
-                    save_cache(&cache_path(&cache_dir, &model_hash, *hash), &entry);
+        pool.install(|| {
+            work.into_par_iter().for_each(|(image, scale, faces, path)| {
+                let crops = crop_faces(&image, scale, &faces);
+                let dest = export_base
+                    .join(path.parent().unwrap().file_name().unwrap())
+                    .join(path.file_name().unwrap());
+                let stem = dest.to_str().unwrap().rsplitn(2, '.').nth(1).unwrap();
+                for (i, crop) in crops.iter().enumerate() {
+                    crop.save(format!("{stem}-{i:>02}.jpg")).unwrap();
                 }
-            }
+            });
+        });
 
-            if sender.send((confidence_full, loc_full, landmark_full, shape, path_vec)).is_err() {
-                break;
+        // Clean up originals & update progress
+        for path in &paths {
+            originals.remove(path);
+        }
+        for (faces, path) in faces_vec.iter().zip(&paths) {
+            debug!("{}", path.display());
+            let mut postfix: String = path.parent().unwrap().file_name().unwrap().to_str().unwrap().into();
+            postfix += &"\0".repeat(postfix.chars().count());
+            if bar.postfix != postfix {
+                bar.set_postfix(postfix);
+            }
+            bar.update(1).unwrap();
+            for face in faces {
+                debug!("\t{:?}", face);
             }
         }
     }
 }
 
-/// キャッシュから復元した結果群を結合して ndarray にする
-fn reconstruct_arrays_from_cache(
-    results: &[CachedInferenceResult],
-) -> (Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>) {
-    let conf_views: Vec<_> = results.iter().map(|r| {
-        let mut shape = vec![1];
-        shape.extend_from_slice(&r.confidence_shape);
-        Array::from_shape_vec(shape, r.confidence.clone()).unwrap()
-    }).collect();
+// -- Decode helpers --
 
-    let loc_views: Vec<_> = results.iter().map(|r| {
-        let mut shape = vec![1];
-        shape.extend_from_slice(&r.loc_shape);
-        Array::from_shape_vec(shape, r.loc.clone()).unwrap()
-    }).collect();
+struct DecodedImage {
+    resized: FirImage<'static>,
+    original: RgbImage,
+    scale: f64,
+}
 
-    let lm_views: Vec<_> = results.iter().map(|r| {
-        let mut shape = vec![1];
-        shape.extend_from_slice(&r.landmark_shape);
-        Array::from_shape_vec(shape, r.landmark.clone()).unwrap()
-    }).collect();
+fn decode_and_resize(
+    bin: &[u8],
+    decompressor: &mut Decompressor,
+    resizer: &mut fast_image_resize::Resizer,
+) -> DecodedImage {
+    let header = decompressor.read_header(bin).unwrap();
+    let mut decoded = Image {
+        pixels: vec![0; header.height * header.width * DECODE_FORMAT.size()],
+        width: header.width,
+        pitch: header.width * DECODE_FORMAT.size(),
+        height: header.height,
+        format: DECODE_FORMAT,
+    };
+    decompressor.decompress(bin, decoded.as_deref_mut()).unwrap();
 
-    let conf_refs: Vec<_> = conf_views.iter().map(|a| a.view()).collect();
-    let loc_refs: Vec<_> = loc_views.iter().map(|a| a.view()).collect();
-    let lm_refs: Vec<_> = lm_views.iter().map(|a| a.view()).collect();
-
-    (
-        ndarray::concatenate(ndarray::Axis(0), &conf_refs).unwrap(),
-        ndarray::concatenate(ndarray::Axis(0), &loc_refs).unwrap(),
-        ndarray::concatenate(ndarray::Axis(0), &lm_refs).unwrap(),
+    let fir = FirImage::from_vec_u8(
+        decoded.width as u32,
+        decoded.height as u32,
+        decoded.pixels,
+        PixelType::U8x3,
     )
-}
+        .unwrap();
 
-// ---------------------------------------------------------------------------
-// 角度計算・描画・クロップ
-// ---------------------------------------------------------------------------
+    let scale = INFERENCE_SIZE as f64 / u32::max(fir.width(), fir.height()) as f64;
+    let resized = if scale >= 1.0 {
+        fir.copy()
+    } else {
+        let w = (scale * fir.width() as f64).round() as u32;
+        let h = (scale * fir.height() as f64).round() as u32;
+        let mut dst = FirImage::new(w, h, PixelType::U8x3);
+        resizer.resize(&fir, &mut dst, &ResizeOptions::default()).unwrap();
+        dst
+    };
 
-fn calc_tilt(landmarks: [[f32; 2]; 5]) -> f32 {
-    let eye_center = [(landmarks[0][0] + landmarks[1][0]) / 2.0, (landmarks[0][1] + landmarks[1][1]) / 2.0];
-    let mouse_center = [(landmarks[3][0] + landmarks[4][0]) / 2.0, (landmarks[3][1] + landmarks[4][1]) / 2.0];
-    f32::atan2(eye_center[1] - mouse_center[1], eye_center[0] - mouse_center[0])
-}
-
-#[allow(dead_code)]
-fn draw_rect(original_image: RgbImage, scale: f32, faces: Vec<FoundFace>) -> RgbImage {
-    let scale = 1.0 / scale;
-    let mut palette = original_image;
-    for face in faces {
-        let angle = calc_tilt(face.landmarks) + f32::PI() / 2.0;
-        let center_x = (face.bbox[0] + face.bbox[2]) * scale / 2.0;
-        let center_y = (face.bbox[1] + face.bbox[3]) * scale / 2.0;
-        let rotation_matrix = arr2(&[
-            [angle.cos(), -angle.sin()],
-            [angle.sin(), angle.cos()],
-        ]);
-        let corners = [
-            arr1(&[face.bbox[0] * scale, face.bbox[1] * scale]),
-            arr1(&[face.bbox[2] * scale, face.bbox[1] * scale]),
-            arr1(&[face.bbox[2] * scale, face.bbox[3] * scale]),
-            arr1(&[face.bbox[0] * scale, face.bbox[3] * scale]),
-        ];
-        let rotated_corners = corners.map(|corner| {
-            let relative_coords = corner - arr1(&[center_x, center_y]);
-            let rotated_relative_coords = rotation_matrix.dot(&relative_coords);
-            rotated_relative_coords + arr1(&[center_x, center_y])
-        });
-        draw_hollow_polygon_mut(&mut palette,
-                                &[Point::new(rotated_corners[0][0], rotated_corners[0][1]),
-                                    Point::new(rotated_corners[1][0], rotated_corners[1][1]),
-                                    Point::new(rotated_corners[2][0], rotated_corners[2][1]),
-                                    Point::new(rotated_corners[3][0], rotated_corners[3][1]),
-                                ], Rgb::from([255, 0, 0]))
+    let original = RgbImage::from_raw(fir.width(), fir.height(), fir.into_vec()).unwrap();
+    DecodedImage {
+        resized,
+        original,
+        scale: f64::min(1.0, scale),
     }
-    palette
 }
 
-fn crop_bbox(original_image: RgbImage, scale: f32, faces: Vec<FoundFace>) -> Vec<RgbImage> {
-    let scale = 1.0 / scale;
-    let mut crops = vec![];
-    for face in faces {
-        if f32::max(face.bbox[2] - face.bbox[0], face.bbox[3] - face.bbox[1]) * scale < 100.0 { continue; }
-        let angle = calc_tilt(face.landmarks) + f32::PI() / 2.0;
-        let center_x = (face.bbox[0] + face.bbox[2]) * scale / 2.0;
-        let center_y = (face.bbox[1] + face.bbox[3]) * scale / 2.0;
-        let rotated = rotate(&original_image, (center_x, center_y), -angle, Interpolation::Bilinear, Rgb([0, 0, 0]));
-        let crop_size = (f32::max((face.bbox[2] - face.bbox[0]) * scale, (face.bbox[3] - face.bbox[1]) * scale) * 1.2) as u32;
-        crops.push(crop_imm(&rotated, (center_x - crop_size as f32 / 2.0) as u32,
-                            (center_y - crop_size as f32 / 2.0) as u32, crop_size, crop_size).to_image());
-    }
-    crops
-}
+fn build_padded_tensor(images: &[FirImage]) -> Array4<f32> {
+    let n = images.len();
+    let mut tensor = vec![0.0f32; n * INFERENCE_SIZE * INFERENCE_SIZE * 3];
 
-// ---------------------------------------------------------------------------
-// ポストプロセススレッド
-// ---------------------------------------------------------------------------
-
-fn postprocess(model_output_receiver: Receiver<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>, original_receiver: Receiver<(PathBuf, RgbImage, f64)>, file_count: usize) {
-    let detector = RetinaFaceFaceDetector { session: Session::builder().unwrap().commit_from_file(MODEL_PATH).unwrap(), model: ModelKind::ResNet };
-    let mut originals: HashMap<_, _> = HashMap::new();
-    let mut bar = tqdm!(total=file_count,disable=false);
-    let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(16).build().unwrap();
-    for (confidence, loc, landmark, input_shape, paths) in model_output_receiver.iter() {
-        if input_shape.len() == 0 { return; }
-        while match original_receiver.try_recv() {
-            Ok((path, image, scale)) => {
-                originals.insert(path.clone(), (image, scale));
-                true
+    for (i, img) in images.iter().enumerate() {
+        let w = img.width() as usize;
+        let h = img.height() as usize;
+        let buf = img.buffer();
+        let base = i * INFERENCE_SIZE * INFERENCE_SIZE * 3;
+        for y in 0..h {
+            let dst_start = base + y * INFERENCE_SIZE * 3;
+            let src_start = y * w * 3;
+            for (dst, &src) in tensor[dst_start..dst_start + w * 3]
+                .iter_mut()
+                .zip(&buf[src_start..src_start + w * 3])
+            {
+                *dst = src as f32 / 255.0;
             }
-            Err(_err) => { false }
-        } {}
-
-        let faces_vec = detector.post_process(confidence, loc, landmark, input_shape).unwrap();
-        let member_dirs = paths.clone().into_iter().map(|path| path.parent().unwrap().file_name().unwrap().to_os_string()).unique().collect::<Vec<_>>();
-        let export_base = data_dir().join("face_cropped");
-        let _ = member_dirs.iter().map(|member_dir| if !export_base.join(member_dir).exists() { fs::create_dir_all(export_base.join(member_dir)).unwrap(); }).collect::<Vec<_>>();
-        thread_pool.install(|| {
-            let _ = faces_vec.clone().iter().zip(paths.clone()).map(|(faces, path)| {
-                let (image, scale) = &originals[&path.clone()];
-                (image, scale, faces, path.clone())
-            }).collect::<Vec<_>>().into_par_iter().map(|(image, scale, faces, path)| {
-                let crops = crop_bbox(image.clone(), *scale as f32, faces.clone());
-                let _ = crops.iter().enumerate().map(|(order, image)| {
-                    let binding = export_base.join(path.parent().unwrap().file_name().unwrap()).join(path.file_name().unwrap());
-                    let p = binding.to_str().unwrap().rsplitn(2, ".").nth(1).unwrap();
-                    image.save(format!("{p}-{order:>02}.jpg")).unwrap();
-                }).collect::<Vec<_>>();
-            }).collect::<Vec<_>>();
-        });
-
-        let _ = paths.iter().map(|path| originals.remove(&path.clone())).collect::<Vec<_>>();
-        let _ = faces_vec.iter().zip(paths).map(|(faces, path)| {
-            debug!("{}", path.as_path().to_str().unwrap());
-            let mut postfix: String = path.parent().unwrap().file_name().unwrap().to_str().unwrap().into();
-            postfix = postfix.to_owned() + "\0".repeat(postfix.chars().count()).as_str();
-            if bar.postfix != postfix {
-                bar.set_postfix(postfix);
-            }
-            bar.update(1).unwrap();
-            let _ = faces.iter().map(|face| {
-                debug!("\t{:?}", face);
-            }).collect::<Vec<_>>();
-        }).collect::<Vec<_>>();
+        }
     }
+
+    Array4::from_shape_vec((n, INFERENCE_SIZE, INFERENCE_SIZE, 3), tensor)
+        .unwrap()
+        .permuted_axes([0, 3, 1, 2])
 }
 
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
+// -- Main --
 
 fn main() {
     tracing_subscriber::fmt::init();
     ameba_blog_downloader::init_ort();
 
-    // モデルハッシュをメインスレッドで一度だけ計算する
-    let model_hash = compute_model_hash(MODEL_PATH);
-    debug!("Model hash (SHA-256 prefix): {}", &model_hash[..16]);
+    let model_hash = compute_model_hash(MODEL_PATH.as_path().to_str().unwrap());
+    debug!("Model hash prefix: {}", &model_hash[..16]);
 
-    // キャッシュディレクトリを作成する
     let cache_dir = data_dir().join("inference_cache");
-    fs::create_dir_all(&cache_dir).expect("Failed to create inference cache directory");
+    fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
 
-    let mut all_files = vec![];
-    for member_dir in data_dir().join("blog_images").read_dir().unwrap() {
-        for image_file in member_dir.unwrap().path().read_dir().unwrap() {
-            let path = image_file.unwrap().path();
-            all_files.push(path);
+    let mut all_files = Vec::new();
+    for entry in data_dir().join("blog_images").read_dir().unwrap() {
+        for file in entry.unwrap().path().read_dir().unwrap() {
+            all_files.push(file.unwrap().path());
         }
     }
 
-    // チャンネル: デコーダ → 推論 (パスと画像ハッシュを追加)
-    let (decoder_sender, inference_receiver) = mpsc::sync_channel::<(Tensor<f32>, Vec<PathBuf>, Vec<u128>)>(40);
-    let (inference_sender, postprocess_receiver) = mpsc::sync_channel(40);
-    let (original_sender, original_receiver) = mpsc::channel();
+    let (decode_tx, infer_rx) = mpsc::sync_channel::<InferenceBatch>(40);
+    let (infer_tx, post_rx) = mpsc::sync_channel::<PostprocessBatch>(40);
+    let (orig_tx, orig_rx) = mpsc::channel::<OriginalImage>();
 
-    let model_hash_clone = model_hash.clone();
-    let cache_dir_clone = cache_dir.clone();
-    let inference_handle = thread::spawn(move || {
-        block_on(inference(inference_receiver, inference_sender, model_hash_clone, cache_dir_clone));
-    });
+    let mh = model_hash.clone();
+    let cd = cache_dir.clone();
+    let inference_handle = thread::spawn(move || block_on(inference(infer_rx, infer_tx, mh, cd)));
 
-    let file_length = all_files.len();
-    let post_process_handle = thread::spawn(move || {
-        postprocess(postprocess_receiver, original_receiver, file_length);
-    });
+    let file_count = all_files.len();
+    let postprocess_handle = thread::spawn(move || postprocess(post_rx, orig_rx, file_count));
 
-    let _ = all_files.chunks(LARGE_BATCH_SIZE).collect::<Vec<_>>().into_par_iter().map(|large_chunk| {
-        let _ = large_chunk.chunks(BATCH_SIZE).collect::<Vec<_>>().into_iter().map(|files| {
+    all_files
+        .chunks(LARGE_BATCH_SIZE)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .for_each(|large_chunk| {
             let mut decompressor = Decompressor::new().unwrap();
             let mut resizer = fast_image_resize::Resizer::new();
             unsafe { resizer.set_cpu_extensions(fast_image_resize::CpuExtensions::Avx2); }
-            let mut raw_images = Vec::new();
-            let mut image_hashes = Vec::new();
 
-            for file in files {
-                let mut fp = File::open(file).unwrap();
-                let mut bin = Vec::with_capacity(file.metadata().unwrap().len() as usize);
-                fp.read_to_end(&mut bin).unwrap();
+            for files in large_chunk.chunks(BATCH_SIZE) {
+                let mut resized_images = Vec::with_capacity(files.len());
+                let mut image_hashes = Vec::with_capacity(files.len());
 
-                // JPEG バイナリのハッシュをここで計算する
-                image_hashes.push(compute_image_hash(&bin));
+                for file in files {
+                    let bin = fs::read(file).unwrap();
+                    image_hashes.push(compute_image_hash(&bin));
 
-                let header = decompressor.read_header(&bin).unwrap();
-                let mut decoded = Image {
-                    pixels: vec![0; header.height * header.width * DECODE_FORMAT.size()],
-                    width: header.width,
-                    pitch: header.width * DECODE_FORMAT.size(),
-                    height: header.height,
-                    format: DECODE_FORMAT,
-                };
-
-                decompressor.decompress(&bin, decoded.as_deref_mut()).unwrap();
-                let decoded = fir_Image::from_vec_u8(
-                    decoded.width as u32, decoded.height as u32, decoded.pixels, PixelType::U8x3,
-                ).unwrap();
-                let resize_scale = INFERENCE_SIZE as f64 / u32::max(decoded.width(), decoded.height()) as f64;
-                if resize_scale > 1.0 {
-                    raw_images.push(decoded.copy());
-                } else {
-                    let mut resized_image = fir_Image::new((resize_scale * decoded.width() as f64).round() as u32,
-                                                           (resize_scale * decoded.height() as f64).round() as u32,
-                                                           PixelType::U8x3);
-                    resizer.resize(&decoded, &mut resized_image, &ResizeOptions::default()).unwrap();
-                    raw_images.push(resized_image);
+                    let decoded = decode_and_resize(&bin, &mut decompressor, &mut resizer);
+                    orig_tx.send((file.clone(), decoded.original, decoded.scale)).unwrap();
+                    resized_images.push(decoded.resized);
                 }
 
-                original_sender.send((file.clone(), RgbImage::from_raw(header.width as u32, header.height as u32, decoded.into_vec()).unwrap(), f64::min(1.0, resize_scale))).unwrap();
+                let input = build_padded_tensor(&resized_images);
+                decode_tx
+                    .send((Tensor::from_array(input).unwrap(), files.to_vec(), image_hashes))
+                    .unwrap();
             }
+            debug!("finished decode.");
+        });
 
-            let mut tensor = vec![0.0; raw_images.len() * INFERENCE_SIZE * INFERENCE_SIZE * 3];
-            for i in 0..raw_images.len() {
-                let float_buffer = raw_images[i].buffer().into_iter().map(|&v| v as f32 / 255.0).collect::<Vec<_>>();
-                for j in 0..raw_images[i].height() as usize {
-                    let begin = i * INFERENCE_SIZE * INFERENCE_SIZE * 3 + INFERENCE_SIZE * 3 * j;
-                    let end = i * INFERENCE_SIZE * INFERENCE_SIZE * 3 + INFERENCE_SIZE * 3 * j + 3 * raw_images[i].width() as usize;
-                    let src = &float_buffer[j * raw_images[i].width() as usize * 3..(j + 1) * raw_images[i].width() as usize * 3];
-                    tensor[begin..end].copy_from_slice(src);
-                }
-            }
-            let input_tensor = Array4::from_shape_vec(
-                (tensor.len() / (INFERENCE_SIZE * INFERENCE_SIZE * 3), INFERENCE_SIZE, INFERENCE_SIZE, 3),
-                tensor,
-            ).unwrap().permuted_axes([0, 3, 1, 2]);
-
-            // image_hashes も一緒に送信する
-            decoder_sender.send((Tensor::from_array(input_tensor).unwrap(), files.to_vec(), image_hashes)).unwrap();
-        }).collect::<Vec<_>>();
-
-        debug!("{}", "finished decode.");
-    }).collect::<Vec<_>>();
-
-    // 終了シグナル: path_vec と image_hashes を空にして送る
-    decoder_sender.send((
-        Tensor::from_array(ndarray::array![[[[0.0]]]]).unwrap(),
-        vec![],
-        vec![],
-    )).unwrap();
+    // Termination signal
+    decode_tx
+        .send((
+            Tensor::from_array(ndarray::array![[[[0.0]]]]).unwrap(),
+            vec![],
+            vec![],
+        ))
+        .unwrap();
 
     inference_handle.join().unwrap();
-    post_process_handle.join().unwrap();
+    postprocess_handle.join().unwrap();
 }
