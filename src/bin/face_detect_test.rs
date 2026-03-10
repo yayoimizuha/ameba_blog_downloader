@@ -165,28 +165,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    // GPU provider DLL (CUDA/TensorRT/OpenVINO) がロードされてハングするのを防ぐため、
-    // onnxruntime.dll だけを隔離ディレクトリにコピーし ORT_DYLIB_PATH で指定する。
-    {
-        let release_deps = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("release")
-            .join("deps");
-        let src_dll = release_deps.join("onnxruntime.dll");
-        if src_dll.exists() {
-            let isolated_dir = release_deps.join("ort_cpu_only");
-            let _ = std::fs::create_dir_all(&isolated_dir);
-            let dest_dll = isolated_dir.join("onnxruntime.dll");
-            if !dest_dll.exists() || std::fs::metadata(&dest_dll).unwrap().len() != std::fs::metadata(&src_dll).unwrap().len() {
-                std::fs::copy(&src_dll, &dest_dll).unwrap();
-            }
-            std::env::set_var("ORT_DYLIB_PATH", &dest_dll);
-        }
-    }
-
     // ORT 初期化
     println!("Initializing ONNX Runtime...");
-    ort::init().commit();
+    ameba_blog_downloader::init_ort();
     println!("ONNX Runtime initialized.");
 
     // 画像ファイルを読み込み
