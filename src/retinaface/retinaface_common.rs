@@ -52,7 +52,7 @@ impl RetinaFaceFaceDetector {
         let execution_providers = [
             // OpenVINOExecutionProvider::default().build(),
             // OneDNNExecutionProvider::default().build(),
-            TensorRTExecutionProvider::default().with_fp16(true).with_int8(true).build(),
+            TensorRTExecutionProvider::default().with_fp16(true).with_int8(true).build().error_on_failure(),
             // CUDAExecutionProvider::default().build(),
             OpenVINOExecutionProvider::default().with_device_type("GPU").with_precision("FP16").build().error_on_failure(),
             // DirectMLExecutionProvider::default().build(),
