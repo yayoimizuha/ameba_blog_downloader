@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::{fs, thread};
 use std::fs::File;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, SyncSender};
 use fast_image_resize::{PixelType, ResizeOptions};
@@ -11,7 +11,7 @@ use ameba_blog_downloader::data_dir;
 use turbojpeg::{Decompressor, Image, PixelFormat};
 use fast_image_resize::images::Image as fir_Image;
 use futures::executor::block_on;
-use ndarray::{arr1, arr2, array, Array, Array4, IxDyn};
+use ndarray::{arr1, arr2, Array, Array4, IxDyn};
 use ort::session::{RunOptions, Session};
 use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
 use image::{Rgb, RgbImage};
@@ -22,11 +22,14 @@ use imageproc::point::Point;
 use itertools::Itertools;
 use kdam::{tqdm, BarExt};
 use num_traits::FloatConst;
-use ort::ep::OpenVINOExecutionProvider;
+use ort::ep::{OpenVINOExecutionProvider, TensorRTExecutionProvider};
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{Tensor, Value};
 use tracing::debug;
+use sha2::{Sha256, Digest};
+use twox_hash::xxhash3_128::Hasher as XxHash3_128;
+use serde::{Serialize, Deserialize};
 use ameba_blog_downloader::retinaface::found_face::FoundFace;
 
 static BATCH_SIZE: usize = 32;
@@ -36,11 +39,83 @@ static INFERENCE_SIZE: usize = 640;
 
 static MODEL_PATH: &str = r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Export\onnx_dest\retinaface_resnet_fused_fp16_with_fp32_io.onnx";
 
-async fn inference(receiver: Receiver<(Tensor<f32>, Vec<PathBuf>)>, sender: SyncSender<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>) {
+// ---------------------------------------------------------------------------
+// キャッシュ関連
+// ---------------------------------------------------------------------------
+
+/// 推論結果を保存するためのシリアライズ可能な構造体
+#[derive(Serialize, Deserialize)]
+struct CachedInferenceResult {
+    confidence: Vec<f32>,
+    confidence_shape: Vec<usize>,
+    loc: Vec<f32>,
+    loc_shape: Vec<usize>,
+    landmark: Vec<f32>,
+    landmark_shape: Vec<usize>,
+}
+
+/// モデルファイルの SHA-256 ハッシュを計算する（起動時に一度だけ呼ぶ）
+fn compute_model_hash(model_path: &str) -> String {
+    let mut f = File::open(model_path).expect("Failed to open model file for hashing");
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let n = f.read(&mut buf).expect("Failed to read model file");
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// JPEG バイナリの XXHash3-128 ハッシュを計算する（高速）
+fn compute_image_hash(jpeg_bytes: &[u8]) -> u128 {
+    XxHash3_128::oneshot(jpeg_bytes)
+}
+
+/// キャッシュファイルのパスを返す
+///
+/// ファイル名: `<model_hash_prefix16>-<image_hash32hex>.bin`
+fn cache_path(cache_dir: &Path, model_hash: &str, image_hash: u128) -> PathBuf {
+    cache_dir.join(format!("{}-{:032x}.bin", &model_hash[..16], image_hash))
+}
+
+/// キャッシュから推論結果を読み込む（存在しなければ None）
+fn load_cache(path: &Path) -> Option<CachedInferenceResult> {
+    let data = fs::read(path).ok()?;
+    bincode::serde::decode_from_slice::<CachedInferenceResult, _>(
+        &data,
+        bincode::config::standard(),
+    )
+    .ok()
+    .map(|(v, _)| v)
+}
+
+/// 推論結果をキャッシュに書き込む
+fn save_cache(path: &Path, result: &CachedInferenceResult) {
+    if let Ok(encoded) = bincode::serde::encode_to_vec(result, bincode::config::standard()) {
+        let _ = fs::write(path, encoded);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 推論スレッド
+// ---------------------------------------------------------------------------
+
+/// デコーダスレッドから受け取るメッセージ
+/// - `tensor`: バッチ入力テンソル
+/// - `path_vec`: バッチ内の各画像のパス
+/// - `image_hashes`: 各画像の XXHash3-128 ハッシュ（path_vec と同じ順序）
+async fn inference(
+    receiver: Receiver<(Tensor<f32>, Vec<PathBuf>, Vec<u128>)>,
+    sender: SyncSender<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>,
+    model_hash: String,
+    cache_dir: PathBuf,
+) {
     ameba_blog_downloader::init_ort();
     let mut model = Session::builder().unwrap()
         .with_execution_providers([
-            OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
+            TensorRTExecutionProvider::default().with_fp16(true).with_int8(true).build(),
+            OpenVINOExecutionProvider::default().with_device_type("GPU").with_precision("FP16").build().error_on_failure()
         ]).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
         .commit_from_file(MODEL_PATH).unwrap();
@@ -48,35 +123,140 @@ async fn inference(receiver: Receiver<(Tensor<f32>, Vec<PathBuf>)>, sender: Sync
     let extract_tensor = |tensor: &Value| tensor.try_extract_array::<f32>().unwrap().to_owned();
     let opt = RunOptions::new().unwrap();
 
-    // This loop processes one inference at a time. It waits to receive a tensor,
-    // runs inference, and crucially `.await`s the result immediately. This releases the
-    // mutable borrow on `model`, allowing the next loop iteration to borrow it again.
-    while let Ok((tensor, path_vec)) = receiver.recv() {
-        // The sending thread signals termination with an empty `path_vec`.
+    while let Ok((tensor, path_vec, image_hashes)) = receiver.recv() {
+        // 終了シグナル: path_vec が空
         if path_vec.is_empty() {
             break;
         }
 
-        let shape = tensor.shape().iter().map(|&v| v as usize).collect::<Vec<_>>();
+        let batch_size = path_vec.len();
 
-        // The core of the fix: call `run_async` and `await` it in the same expression.
-        let infer_out = model.run_async(inputs! {"input" => tensor}, &opt)
-            .unwrap()
-            .await
-            .unwrap();
+        // ------------------------------------------------------------------
+        // 1. 各画像のキャッシュ確認
+        // ------------------------------------------------------------------
+        let cached_results: Vec<Option<CachedInferenceResult>> = image_hashes
+            .iter()
+            .map(|&h| load_cache(&cache_path(&cache_dir, &model_hash, h)))
+            .collect();
 
-        // Extract results from the completed inference.
-        let [confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| {
-            extract_tensor(infer_out.get(label).unwrap())
-        });
+        let all_cached = cached_results.iter().all(|r| r.is_some());
 
-        // Send the results to the post-processing thread.
-        if sender.send((confidence, loc, landmark, shape, path_vec)).is_err() {
-            // The receiver has been dropped, so we can stop processing.
-            break;
+        // ------------------------------------------------------------------
+        // 2. キャッシュミスがあれば実際に推論を実行する
+        // ------------------------------------------------------------------
+        let (confidence_full, loc_full, landmark_full, shape) = if all_cached {
+            debug!("All {} images in batch are cache hits, skipping inference.", batch_size);
+            // ダミーとして使う shape だけ取得（後で上書き）
+            let s = tensor.shape().iter().map(|&v| v as usize).collect::<Vec<_>>();
+            (None, None, None, s)
+        } else {
+            let shape = tensor.shape().iter().map(|&v| v as usize).collect::<Vec<_>>();
+            let infer_out = model.run_async(inputs! {"input" => tensor}, &opt)
+                .unwrap()
+                .await
+                .unwrap();
+            let [confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| {
+                extract_tensor(infer_out.get(label).unwrap())
+            });
+            (Some(confidence), Some(loc), Some(landmark), shape)
+        };
+
+        // ------------------------------------------------------------------
+        // 3. 推論結果をキャッシュに書き込み、同時に送信用データを組み立てる
+        // ------------------------------------------------------------------
+        // バッチ全体の結果を再構成するための配列を用意する。
+        // キャッシュヒット画像: キャッシュから復元
+        // キャッシュミス画像: 推論結果の対応スライスから取り出す
+        //
+        // 推論結果の形状:
+        //   confidence: [N, num_anchors, 2]
+        //   loc:        [N, num_anchors, 4]
+        //   landmark:   [N, num_anchors, 10]
+        //
+        // ここでは送信用に「バッチ全体の ndarray」を再合成する。
+
+        if all_cached {
+            // 全てキャッシュヒット: キャッシュから ndarray を復元して結合
+            let results: Vec<CachedInferenceResult> = cached_results
+                .into_iter()
+                .map(|r| r.unwrap())
+                .collect();
+
+            let (confidence_arr, loc_arr, landmark_arr) =
+                reconstruct_arrays_from_cache(&results);
+
+            if sender.send((confidence_arr, loc_arr, landmark_arr, shape, path_vec)).is_err() {
+                break;
+            }
+        } else {
+            // 一部またはすべてキャッシュミス
+            let confidence_full = confidence_full.unwrap();
+            let loc_full = loc_full.unwrap();
+            let landmark_full = landmark_full.unwrap();
+
+            // キャッシュミス画像を個別にキャッシュ保存
+            for (i, (hash, cached)) in image_hashes.iter().zip(cached_results.iter()).enumerate() {
+                if cached.is_none() {
+                    let conf_slice = confidence_full.index_axis(ndarray::Axis(0), i).to_owned();
+                    let loc_slice = loc_full.index_axis(ndarray::Axis(0), i).to_owned();
+                    let lm_slice = landmark_full.index_axis(ndarray::Axis(0), i).to_owned();
+
+                    let entry = CachedInferenceResult {
+                        confidence: conf_slice.iter().cloned().collect(),
+                        confidence_shape: conf_slice.shape().to_vec(),
+                        loc: loc_slice.iter().cloned().collect(),
+                        loc_shape: loc_slice.shape().to_vec(),
+                        landmark: lm_slice.iter().cloned().collect(),
+                        landmark_shape: lm_slice.shape().to_vec(),
+                    };
+                    save_cache(&cache_path(&cache_dir, &model_hash, *hash), &entry);
+                }
+            }
+
+            if sender.send((confidence_full, loc_full, landmark_full, shape, path_vec)).is_err() {
+                break;
+            }
         }
     }
 }
+
+/// キャッシュから復元した結果群を結合して ndarray にする
+fn reconstruct_arrays_from_cache(
+    results: &[CachedInferenceResult],
+) -> (Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>) {
+    let conf_views: Vec<_> = results.iter().map(|r| {
+        let mut shape = vec![1];
+        shape.extend_from_slice(&r.confidence_shape);
+        Array::from_shape_vec(shape, r.confidence.clone()).unwrap()
+    }).collect();
+
+    let loc_views: Vec<_> = results.iter().map(|r| {
+        let mut shape = vec![1];
+        shape.extend_from_slice(&r.loc_shape);
+        Array::from_shape_vec(shape, r.loc.clone()).unwrap()
+    }).collect();
+
+    let lm_views: Vec<_> = results.iter().map(|r| {
+        let mut shape = vec![1];
+        shape.extend_from_slice(&r.landmark_shape);
+        Array::from_shape_vec(shape, r.landmark.clone()).unwrap()
+    }).collect();
+
+    let conf_refs: Vec<_> = conf_views.iter().map(|a| a.view()).collect();
+    let loc_refs: Vec<_> = loc_views.iter().map(|a| a.view()).collect();
+    let lm_refs: Vec<_> = lm_views.iter().map(|a| a.view()).collect();
+
+    (
+        ndarray::concatenate(ndarray::Axis(0), &conf_refs).unwrap(),
+        ndarray::concatenate(ndarray::Axis(0), &loc_refs).unwrap(),
+        ndarray::concatenate(ndarray::Axis(0), &lm_refs).unwrap(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// 角度計算・描画・クロップ
+// ---------------------------------------------------------------------------
+
 fn calc_tilt(landmarks: [[f32; 2]; 5]) -> f32 {
     let eye_center = [(landmarks[0][0] + landmarks[1][0]) / 2.0, (landmarks[0][1] + landmarks[1][1]) / 2.0];
     let mouse_center = [(landmarks[3][0] + landmarks[4][0]) / 2.0, (landmarks[3][1] + landmarks[4][1]) / 2.0];
@@ -131,6 +311,11 @@ fn crop_bbox(original_image: RgbImage, scale: f32, faces: Vec<FoundFace>) -> Vec
     }
     crops
 }
+
+// ---------------------------------------------------------------------------
+// ポストプロセススレッド
+// ---------------------------------------------------------------------------
+
 fn postprocess(model_output_receiver: Receiver<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>, original_receiver: Receiver<(PathBuf, RgbImage, f64)>, file_count: usize) {
     let detector = RetinaFaceFaceDetector { session: Session::builder().unwrap().commit_from_file(MODEL_PATH).unwrap(), model: ModelKind::ResNet };
     let mut originals: HashMap<_, _> = HashMap::new();
@@ -179,9 +364,23 @@ fn postprocess(model_output_receiver: Receiver<(Array<f32, IxDyn>, Array<f32, Ix
         }).collect::<Vec<_>>();
     }
 }
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
 fn main() {
     tracing_subscriber::fmt::init();
     ameba_blog_downloader::init_ort();
+
+    // モデルハッシュをメインスレッドで一度だけ計算する
+    let model_hash = compute_model_hash(MODEL_PATH);
+    debug!("Model hash (SHA-256 prefix): {}", &model_hash[..16]);
+
+    // キャッシュディレクトリを作成する
+    let cache_dir = data_dir().join("inference_cache");
+    fs::create_dir_all(&cache_dir).expect("Failed to create inference cache directory");
+
     let mut all_files = vec![];
     for member_dir in data_dir().join("blog_images").read_dir().unwrap() {
         for image_file in member_dir.unwrap().path().read_dir().unwrap() {
@@ -189,26 +388,39 @@ fn main() {
             all_files.push(path);
         }
     }
-    let (decoder_sender, inference_receiver) = mpsc::sync_channel(40);
+
+    // チャンネル: デコーダ → 推論 (パスと画像ハッシュを追加)
+    let (decoder_sender, inference_receiver) = mpsc::sync_channel::<(Tensor<f32>, Vec<PathBuf>, Vec<u128>)>(40);
     let (inference_sender, postprocess_receiver) = mpsc::sync_channel(40);
     let (original_sender, original_receiver) = mpsc::channel();
+
+    let model_hash_clone = model_hash.clone();
+    let cache_dir_clone = cache_dir.clone();
     let inference_handle = thread::spawn(move || {
-        block_on(inference(inference_receiver, inference_sender));
+        block_on(inference(inference_receiver, inference_sender, model_hash_clone, cache_dir_clone));
     });
+
     let file_length = all_files.len();
     let post_process_handle = thread::spawn(move || {
         postprocess(postprocess_receiver, original_receiver, file_length);
     });
+
     let _ = all_files.chunks(LARGE_BATCH_SIZE).collect::<Vec<_>>().into_par_iter().map(|large_chunk| {
         let _ = large_chunk.chunks(BATCH_SIZE).collect::<Vec<_>>().into_iter().map(|files| {
             let mut decompressor = Decompressor::new().unwrap();
             let mut resizer = fast_image_resize::Resizer::new();
             unsafe { resizer.set_cpu_extensions(fast_image_resize::CpuExtensions::Avx2); }
             let mut raw_images = Vec::new();
+            let mut image_hashes = Vec::new();
+
             for file in files {
                 let mut fp = File::open(file).unwrap();
                 let mut bin = Vec::with_capacity(file.metadata().unwrap().len() as usize);
                 fp.read_to_end(&mut bin).unwrap();
+
+                // JPEG バイナリのハッシュをここで計算する
+                image_hashes.push(compute_image_hash(&bin));
+
                 let header = decompressor.read_header(&bin).unwrap();
                 let mut decoded = Image {
                     pixels: vec![0; header.height * header.width * DECODE_FORMAT.size()],
@@ -235,6 +447,7 @@ fn main() {
 
                 original_sender.send((file.clone(), RgbImage::from_raw(header.width as u32, header.height as u32, decoded.into_vec()).unwrap(), f64::min(1.0, resize_scale))).unwrap();
             }
+
             let mut tensor = vec![0.0; raw_images.len() * INFERENCE_SIZE * INFERENCE_SIZE * 3];
             for i in 0..raw_images.len() {
                 let float_buffer = raw_images[i].buffer().into_iter().map(|&v| v as f32 / 255.0).collect::<Vec<_>>();
@@ -245,15 +458,25 @@ fn main() {
                     tensor[begin..end].copy_from_slice(src);
                 }
             }
-            let input_tensor = Array4::from_shape_vec((tensor.len() / (INFERENCE_SIZE * INFERENCE_SIZE * 3), INFERENCE_SIZE, INFERENCE_SIZE, 3), tensor.clone()).unwrap().permuted_axes([0, 3, 1, 2]);
+            let input_tensor = Array4::from_shape_vec(
+                (tensor.len() / (INFERENCE_SIZE * INFERENCE_SIZE * 3), INFERENCE_SIZE, INFERENCE_SIZE, 3),
+                tensor,
+            ).unwrap().permuted_axes([0, 3, 1, 2]);
 
-            decoder_sender.send((Tensor::from_array(input_tensor).unwrap(), files.to_vec())).unwrap();
+            // image_hashes も一緒に送信する
+            decoder_sender.send((Tensor::from_array(input_tensor).unwrap(), files.to_vec(), image_hashes)).unwrap();
         }).collect::<Vec<_>>();
-
 
         debug!("{}", "finished decode.");
     }).collect::<Vec<_>>();
-    decoder_sender.send((Tensor::from_array(array![[[[0.0]]]]).unwrap(), vec![])).unwrap();
+
+    // 終了シグナル: path_vec と image_hashes を空にして送る
+    decoder_sender.send((
+        Tensor::from_array(ndarray::array![[[[0.0]]]]).unwrap(),
+        vec![],
+        vec![],
+    )).unwrap();
+
     inference_handle.join().unwrap();
     post_process_handle.join().unwrap();
 }
