@@ -142,11 +142,11 @@ async fn inference(
                 .with_int8(true)
                 .build()
                 .error_on_failure(),
-            OpenVINOExecutionProvider::default()
-                .with_device_type("GPU")
-                .with_precision("FP16")
-                .build()
-                .error_on_failure(),
+            // OpenVINOExecutionProvider::default()
+            //     .with_device_type("GPU")
+            //     .with_precision("FP16")
+            //     .build()
+            //     .error_on_failure(),
         ])
         .unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3)
