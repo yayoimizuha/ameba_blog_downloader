@@ -429,9 +429,17 @@ fn crop_and_export(
             return;
         }
 
-        // 元画像チャネルから利用可能な画像を取得
+        // 元画像チャネルから、このバッチに必要な画像が揃うまで受信する
         while let Ok((path, image, scale)) = original_rx.try_recv() {
             originals.insert(path, (image, scale));
+        }
+        for path in &paths {
+            while !originals.contains_key(path) {
+                match original_rx.recv() {
+                    Ok((p, image, scale)) => { originals.insert(p, (image, scale)); }
+                    Err(_) => return,
+                }
+            }
         }
 
         // 出力ディレクトリを確保
