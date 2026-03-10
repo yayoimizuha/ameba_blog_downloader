@@ -18,7 +18,6 @@ async fn main() {
     let articles = sqlx::query_as("SELECT article_id,date FROM blog;").fetch_all(&pool).await.unwrap().iter().map(|(id, date): &(i64, String)| (*id, DateTime::parse_from_rfc3339(date.deref()).unwrap())).collect::<HashMap<_, _>>();
 
     let dir = data_dir().join("blog_images").read_dir().unwrap();
-    // panic!();
     let file_list = dir.filter_map(|x| match x {
         Ok(x) if x.path().is_dir() => {Some(x)}
         _ => {None}

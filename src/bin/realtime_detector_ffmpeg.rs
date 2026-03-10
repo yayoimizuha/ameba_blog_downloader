@@ -7,7 +7,7 @@ use std::thread;
 use itertools::Itertools;
 use ndarray::{concatenate, s, stack, Array, ArrayView, Axis, Ix3, IxDyn};
 use num_traits::AsPrimitive;
-use ort::execution_providers::{CPUExecutionProvider, OpenVINOExecutionProvider};
+use ort::execution_providers::OpenVINOExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::{RunOptions, Session};
@@ -27,7 +27,6 @@ impl YOLO {
     fn new() -> YOLO {
         let mut model = Session::builder().unwrap()
             .with_execution_providers([
-                // CPUExecutionProvider::default().build(),
                 OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure(),
             ]).unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
@@ -46,7 +45,6 @@ fn preprocessor(preprocessor_receiver: Receiver<Option<Vec<u8>>>, preprocessor_s
     let mut cont = true;
     let padded_multiplier = 32;
     while cont {
-        // let mut tensors = vec![];
         let buffers = (0..BATCH_SIZE).filter_map(|_| {
             let buffer = if cont {
                 preprocessor_receiver.recv().unwrap()
@@ -62,7 +60,6 @@ fn preprocessor(preprocessor_receiver: Receiver<Option<Vec<u8>>>, preprocessor_s
             }
         }).collect::<Vec<_>>();
         let _ = buffers.into_par_iter().map(|buffer| {
-            // let buffer = preprocessor_receiver.recv().unwrap();
             let tensor = Array::from_shape_vec(vec![height, width, 4], buffer.clone()).unwrap();
             let tensor = tensor.slice(s![..,..,..3;-1]);
             let shape = tensor.shape();
@@ -80,14 +77,12 @@ fn preprocessor(preprocessor_receiver: Receiver<Option<Vec<u8>>>, preprocessor_s
                     3], dst_image.buffer().to_vec()).unwrap().permuted_axes([2, 0, 1]);
             let tensor = tensor.mapv(|v| v as f32 / u8::MAX as f32);
             let shape = tensor.shape();
-            // println!("{:?}", shape);
 
             let mut padded = Array::from_shape_fn([3,
                                                       shape[1].div_ceil(padded_multiplier) * padded_multiplier,
                                                       shape[2].div_ceil(padded_multiplier) * padded_multiplier], |(_, _, _)| { 0f32 });
             padded.slice_mut(s![..,..shape[1],..shape[2]]).assign(&tensor);
             padded
-            // println!("{:?}", padded.shape());
         }).map(|tensor| preprocessor_sender.send(Some(tensor)).unwrap()).collect::<Vec<_>>();
     }
     preprocessor_sender.send(None).unwrap()
@@ -133,7 +128,6 @@ fn main() {
                 "json",
             ])
             .output().unwrap().stdout).unwrap().as_str()).unwrap();
-    // println!("{:?}", ffprobe_output);
     let width = ffprobe_output["streams"][0]["width"].as_i64().unwrap() as usize;
     let height = ffprobe_output["streams"][0]["height"].as_i64().unwrap() as usize;
     let total_frames = ffprobe_output["streams"][0]["nb_read_packets"].as_str().unwrap().parse::<i64>().unwrap();
@@ -162,7 +156,6 @@ fn main() {
         infer(infer_receiver);
     });
     for _ in 0..total_frames {
-        // let mut tensors = vec![];
         let mut buffer = vec![0u8; frame_size];
         ffmpeg_input_reader.read_exact(&mut buffer).unwrap();
         main_sender.send(Some(buffer)).unwrap();

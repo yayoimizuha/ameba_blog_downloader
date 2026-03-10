@@ -25,7 +25,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio::{spawn, sync};
 static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(200)));
-const DATA_PATH: Lazy<PathBuf> = Lazy::new(|| data_dir());
+static DATA_PATH: Lazy<PathBuf> = Lazy::new(|| data_dir());
 static SQLITE_DB: sync::OnceCell<Arc<Mutex<SqlitePool>>> = sync::OnceCell::const_new();
 
 static CREATED_USER_DIR: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
@@ -63,10 +63,7 @@ async fn get_page_count(client: Client, blog_key: String) -> Option<(String, u64
     match client.get(&format!("https://ameblo.jp/{blog_key}/entrylist.html")).send().await {
         Ok(resp) => {
             let html = resp.text().await.unwrap();
-            // println!("{:?}",serde_json::from_str::<Value>(find_init_json(html.clone())?.as_str()).unwrap()["entryState"]["blogPageMap"]);
-            // panic!();
             let json_obj = serde_json::from_str::<Value>(find_init_json(html)?.as_str()).unwrap();
-            // println!("{:?}", &json_obj["entryState"]["blogPageMap"].as_object()?.keys().next().unwrap());
             match &json_obj["entryState"]["blogPageMap"].as_object() {
                 None => {
                     println!("{}", json_obj);
@@ -101,7 +98,6 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exi
     progress.lock().unwrap().update(1)?;
     Ok(match json["entryState"]["entryMap"].as_object() {
         None => {
-            // println!("{}", json);
             println!("{}", entry_list_url);
             return Err(Error::msg(format!("Error occurred at {entry_list_url}")));
         }
@@ -121,7 +117,6 @@ async fn parse_list_page(client: Client, blog_key: String, page_number: u64, exi
         let blog_id = article_info["blog_id"].as_i64().unwrap();
         let theme = theme_curator(article_info["theme_name"].as_str().unwrap().to_string(), &blog_key);
         create_directory_if_not_exist(&theme);
-        let _article_val = article_info.to_string();
         let entry_title = match article_info["entry_title"].as_str() {
             None => { "".to_string() }
             Some(x) => { x.to_string() }
@@ -278,7 +273,6 @@ async fn parse_article_page(client: Client, page_data: PageData, progress: Arc<M
 }
 
 async fn download_file(client: Client, file_path: PathBuf, date: DateTime<FixedOffset>, url: String, id: i64, dl_manager: Arc<Mutex<HashMap<i64, usize>>>, progress: Arc<Mutex<Bar>>) {
-    // if file_path.exists() { return; }
     let _permit = SEMAPHORE.acquire().await.unwrap();
     let resp = client.get(url).send().await.unwrap();
     if resp.status().as_u16() == 200 {
@@ -315,7 +309,6 @@ async fn main() {
         let sqlite_path = DATA_PATH.join("blog_text.sqlite");
         let option = SqliteConnectOptions::new().create_if_missing(true).filename(sqlite_path);
         let pool = Arc::new(Mutex::new(SqlitePool::connect_with(option).await.unwrap()));
-        // let mut conn = pool.lock().unwrap().acquire().await.unwrap();
         sqlx::query("CREATE TABLE IF NOT EXISTS blog (article_id INTEGER PRIMARY KEY,blog_key TEXT,theme TEXT,title TEXT,date TEXT,article TEXT);").execute(pool.lock().unwrap().deref()).await.unwrap();
         sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS blog_idx ON blog(article_id)").execute(pool.lock().unwrap().deref()).await.unwrap();
         sqlx::query("CREATE TABLE IF NOT EXISTS processed_blog (article_id INTEGER PRIMARY KEY,article_cleaned TEXT,article_overview TEXT,cleaned_embedding BLOB,overview_embedding BLOB);").execute(pool.lock().unwrap().deref()).await.unwrap();
@@ -332,12 +325,11 @@ async fn main() {
     let blog_list = BufReader::new(File::open(blog_names_file).unwrap())
         .lines()
         .filter_map(|x| match x {
-            Ok(x) if !x.starts_with("#") => Some(x.clone()),
+            Ok(x) if !x.starts_with('#') => Some(x.clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
     let reqwest_client = Client::builder()
-        // .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0")
         .build().unwrap();
 
     println!("start count list pages");
@@ -351,7 +343,6 @@ async fn main() {
     let exists: Arc<HashMap<_, _>> = Arc::new(sqlx::query_as("SELECT blog.article_id,blog.date FROM blog JOIN manage ON blog.article_id = manage.article_id WHERE manage.image_downloaded <> 0;")
         .fetch_all(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap().iter()
         .map(|(a, b): &(i64, String)| (*a, DateTime::parse_from_rfc3339(b.deref()).unwrap())).collect());
-    // println!("{:?}", exists);
 
     let progress_parse_list = Arc::new(Mutex::new(
         tqdm!(total=page_counts.clone().iter().map(|x|*x.1 as usize).sum::<usize>(),
@@ -369,7 +360,6 @@ async fn main() {
 
 
     let mut trans = SQLITE_DB.get().unwrap().lock().unwrap().deref().begin().await.unwrap();
-    // let downloaded_time = Local::now();
     let mut image_download_map: HashMap<i64, Vec<_>> = HashMap::new();
 
     let progress_parse_article = Arc::new(Mutex::new(tqdm!(total=all_pages.len(),desc="page parsing...",animation="ascii",force_refresh=true,leave=false)));
@@ -386,7 +376,6 @@ async fn main() {
     })).await.into_iter().filter_map(|x| {
         x.unwrap().ok()
     }) {
-        // println!("{:?}", page_data);
         sqlx::query("REPLACE INTO blog VALUES(?, ?, ?, ?, ?, ?)")
             .bind(page_data.article_id)
             .bind(page_data.blog_key)
@@ -398,7 +387,6 @@ async fn main() {
         sqlx::query("INSERT OR IGNORE INTO manage VALUES(?, ?, ?, ?, ?)")
             .bind(page_data.article_id)
             .bind(None::<String>)
-            // .bind(downloaded_time.to_rfc3339_opts(SecondsFormat::Secs, false))
             .bind(0)
             .bind(0)
             .bind(page_data.comment_api)
@@ -431,7 +419,4 @@ async fn main() {
         let progress_clone = Arc::clone(&image_progress);
         spawn(download_file(reqwest_client.clone(), path, date, url, id, dl_counter, progress_clone))
     })).await.into_iter();
-
-
-    ()
 }

@@ -43,18 +43,18 @@ fn main() {
     similarity.iter().take(TAKE_NTH).for_each(|(entity, score)| {
         println!("{:?} : {}", entity.file_name, score);
     });
-    // copy to dest_dir
+
     let mut exiftool_processes = Vec::new();
 
     std::fs::create_dir_all(dest_dir.clone()).unwrap();
-    similarity.into_iter().take(TAKE_NTH).enumerate().for_each(|(order, (entity, score))| {
+    similarity.into_iter().take(TAKE_NTH).for_each(|(entity, score)| {
         let src = PathBuf::from(entity.file_name.clone());
         let dest_path = dest_dir.join(src.file_name().unwrap().to_str().unwrap());
         std::fs::copy(&src, &dest_path).unwrap();
 
         exiftool_processes.push(Command::new("exiftool")
             .arg("-overwrite_original")
-            .arg(format!("-UserComment={}", format!("{:.6}", score)))
+            .arg(format!("-UserComment={:.6}", score))
             .arg(dest_path.to_str().unwrap())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

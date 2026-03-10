@@ -33,7 +33,7 @@ fn article_cleaner(a: (i64, String), b: (i64, String)) -> Option<(i64, String)> 
             None
         }
     }).join("\n").as_str(), "\n\n").into_owned();
-    if return_string.replace(" ", "").replace("\n", "").replace("\r", "").replace("\t", "").len() == 0 {
+    if return_string.chars().all(|c| c == ' ' || c == '\n' || c == '\r' || c == '\t') {
         return None;
     }
     Some((a.0, return_string.trim().into()))
@@ -53,7 +53,6 @@ async fn main() {
             .fetch_all(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap().iter().map(|(id, text): &(i64, String)| (*id, text.clone())).collect::<Vec<_>>();
         println!("{} {}", theme, articles.len());
         let mut trans = SQLITE_DB.get().unwrap().lock().unwrap().deref().begin().await.unwrap();
-        // let last = articles[articles.len() - 2..].to_vec();
         for res in articles.into_iter().tuple_windows().collect::<Vec<_>>().into_par_iter().map(|(a, b)| {
             article_cleaner(a, b)
         }).collect::<Vec<_>>() {
@@ -66,9 +65,6 @@ async fn main() {
             sqlx::query("UPDATE processed_blog SET article_cleaned = ? WHERE article_id = ?;")
                 .bind(text).bind(id).execute(&mut *trans).await.unwrap();
         }
-        // let last_res = article_cleaner(last[1].clone(), last[0].clone()).await;
-        // sqlx::query("UPDATE processed_blog SET article_cleaned = ? WHERE article_id = ?;")
-        //     .bind(last_res.0).bind(last_res.1).execute(&mut *trans).await.unwrap();
         trans.commit().await.unwrap();
     }
     sqlx::query("DELETE FROM processed_blog WHERE article_cleaned = '';").execute(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap();

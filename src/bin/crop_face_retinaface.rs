@@ -1,9 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::{fs, thread};
-use std::cell::RefCell;
 use std::fs::File;
 use std::io::Read;
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, SyncSender};
@@ -13,15 +11,13 @@ use ameba_blog_downloader::data_dir;
 use turbojpeg::{Decompressor, Image, PixelFormat};
 use fast_image_resize::images::Image as fir_Image;
 use futures::executor::block_on;
-use futures::future::{join_all, select_all};
-use futures::FutureExt;
-use futures::stream::SelectAll;
+use futures::future::join_all;
 use ndarray::{arr1, arr2, array, Array, Array4, IxDyn};
-use ort::session::{InferenceFut, NoSelectedOutputs, RunOptions, Session};
+use ort::session::{RunOptions, Session};
 use ameba_blog_downloader::retinaface::retinaface_common::{ModelKind, RetinaFaceFaceDetector};
 use image::{Rgb, RgbImage};
-use image::imageops::{crop_imm};
-use imageproc::drawing::{draw_hollow_polygon_mut};
+use image::imageops::crop_imm;
+use imageproc::drawing::draw_hollow_polygon_mut;
 use imageproc::geometric_transformations::{rotate, Interpolation};
 use imageproc::point::Point;
 use itertools::Itertools;
@@ -31,8 +27,6 @@ use ort::execution_providers::OpenVINOExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{Tensor, Value};
-use tokio::pin;
-use tokio_stream::StreamMap;
 use tracing::debug;
 use ameba_blog_downloader::retinaface::found_face::FoundFace;
 
@@ -43,61 +37,6 @@ static INFERENCE_SIZE: usize = 640;
 
 static MODEL_PATH: &str = r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Export\onnx_dest\retinaface_resnet_fused_fp16_with_fp32_io.onnx";
 
-// async fn inference(receiver: Receiver<(Tensor<f32>, Vec<PathBuf>)>, sender: SyncSender<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>) {
-//     ort::init().commit().unwrap();
-//     let mut model = Session::builder().unwrap()
-//         .with_execution_providers([
-//             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
-//         ]).unwrap()
-//         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
-//         .commit_from_file(MODEL_PATH).unwrap();
-//     let futures = RefCell::new(VecDeque::new());
-//     let extract_tensor = |tensor: &Value| tensor.try_extract_array::<f32>().unwrap().view().to_owned().mapv(|v| v);
-//     let extract_output = async |model_output: InferenceFut, shape: Vec<i64>, path_vec: Vec<PathBuf>| {
-//         let infer_out = model_output.await.unwrap();
-//         let [ confidence, loc, landmark] = ["confidence", "bbox", "landmark"].map(|label| extract_tensor(infer_out.get(label).unwrap()));
-//         sender.send((confidence, loc, landmark, shape.iter().map(|&v| v as usize).collect::<Vec<_>>(), path_vec)).unwrap();
-//     };
-//     let opt = RunOptions::new().unwrap();
-// 
-//     while if futures.borrow().len() > 15 {
-//         let mut pop_vec = vec![];
-//         for _ in 0..7 {
-//             let (model_out, shape, path_vec) = futures.borrow_mut().pop_front().unwrap();
-//             // extract_output(model_out, shape, path_vec).await;
-//             pop_vec.push(extract_output(model_out, shape, path_vec));
-//         }
-//         join_all(pop_vec).await;
-//         true
-//     } else {
-//         match receiver.try_recv() {
-//             Ok((tensor, path_vec)) => {
-//                 if path_vec.is_empty() { false } else {
-//                     let tensor_shape = tensor.shape().clone();
-//                     futures.borrow_mut().push_back((model.run_async(inputs! {"input"=>tensor}, &opt).unwrap(), tensor_shape.to_vec(), path_vec));
-//                     true
-//                 }
-//             }
-//             Err(_) => {
-//                 while match futures.borrow_mut().pop_front() {
-//                     None => { false }
-//                     Some((model_out, shape, path_vec)) => {
-//                         extract_output(model_out, shape, path_vec).await;
-//                         true
-//                     }
-//                 } {}
-//                 true
-//             }
-//         }
-//     } {}
-//     while match futures.borrow_mut().pop_front() {
-//         None => { false }
-//         Some((model_out, shape, path_vec)) => {
-//             extract_output(model_out, shape, path_vec).await;
-//             true
-//         }
-//     } {}
-// }
 async fn inference(receiver: Receiver<(Tensor<f32>, Vec<PathBuf>)>, sender: SyncSender<(Array<f32, IxDyn>, Array<f32, IxDyn>, Array<f32, IxDyn>, Vec<usize>, Vec<PathBuf>)>) {
     ameba_blog_downloader::init_ort();
     let mut model = Session::builder().unwrap()
@@ -158,10 +97,10 @@ fn draw_rect(original_image: RgbImage, scale: f32, faces: Vec<FoundFace>) -> Rgb
             [angle.sin(), angle.cos()],
         ]);
         let corners = [
-            arr1(&[face.bbox[0] * scale, face.bbox[1] * scale]), // 左上
-            arr1(&[face.bbox[2] * scale, face.bbox[1] * scale]), // 右上
-            arr1(&[face.bbox[2] * scale, face.bbox[3] * scale]), // 右下
-            arr1(&[face.bbox[0] * scale, face.bbox[3] * scale]), // 左下
+            arr1(&[face.bbox[0] * scale, face.bbox[1] * scale]),
+            arr1(&[face.bbox[2] * scale, face.bbox[1] * scale]),
+            arr1(&[face.bbox[2] * scale, face.bbox[3] * scale]),
+            arr1(&[face.bbox[0] * scale, face.bbox[3] * scale]),
         ];
         let rotated_corners = corners.map(|corner| {
             let relative_coords = corner - arr1(&[center_x, center_y]);
@@ -217,9 +156,7 @@ fn postprocess(model_output_receiver: Receiver<(Array<f32, IxDyn>, Array<f32, Ix
                 let (image, scale) = &originals[&path.clone()];
                 (image, scale, faces, path.clone())
             }).collect::<Vec<_>>().into_par_iter().map(|(image, scale, faces, path)| {
-                // let drawn_rect = draw_rect(image.clone(), scale.clone() as f32, faces.clone());
-                // drawn_rect.save(export_base.join(path.parent().unwrap().file_name().unwrap()).join(path.file_name().unwrap())).unwrap();
-                let crops = crop_bbox(image.clone(), scale.clone() as f32, faces.clone());
+                let crops = crop_bbox(image.clone(), *scale as f32, faces.clone());
                 let _ = crops.iter().enumerate().map(|(order, image)| {
                     let binding = export_base.join(path.parent().unwrap().file_name().unwrap()).join(path.file_name().unwrap());
                     let p = binding.to_str().unwrap().rsplitn(2, ".").nth(1).unwrap();
@@ -248,10 +185,8 @@ fn main() {
     ameba_blog_downloader::init_ort();
     let mut all_files = vec![];
     for member_dir in data_dir().join("blog_images").read_dir().unwrap() {
-        // for member_dir in PathBuf::from(r"C:\Users\tomokazu\すぐ消す\仮").read_dir().unwrap() {
         for image_file in member_dir.unwrap().path().read_dir().unwrap() {
             let path = image_file.unwrap().path();
-            // println!("{:?}", path.clone());
             all_files.push(path);
         }
     }
@@ -261,7 +196,7 @@ fn main() {
     let inference_handle = thread::spawn(move || {
         block_on(inference(inference_receiver, inference_sender));
     });
-    let file_length = all_files.len().clone();
+    let file_length = all_files.len();
     let post_process_handle = thread::spawn(move || {
         postprocess(postprocess_receiver, original_receiver, file_length);
     });
@@ -314,12 +249,10 @@ fn main() {
             let input_tensor = Array4::from_shape_vec((tensor.len() / (INFERENCE_SIZE * INFERENCE_SIZE * 3), INFERENCE_SIZE, INFERENCE_SIZE, 3), tensor.clone()).unwrap().permuted_axes([0, 3, 1, 2]);
 
             decoder_sender.send((Tensor::from_array(input_tensor).unwrap(), files.to_vec())).unwrap();
-            // (tensor, raw_images.into_iter().map(|(_, a, b)| (a, b)).collect::<Vec<_>>())
         }).collect::<Vec<_>>();
 
 
         debug!("{}", "finished decode.");
-        // println!("{}", "finished decode.");
     }).collect::<Vec<_>>();
     decoder_sender.send((Tensor::from_array(array![[[[0.0]]]]).unwrap(), vec![])).unwrap();
     inference_handle.join().unwrap();

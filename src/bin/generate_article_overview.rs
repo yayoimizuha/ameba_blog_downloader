@@ -4,28 +4,23 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use crc32fast::hash;
 use futures::future::join_all;
-use itertools::Itertools;
 use kdam::{Bar, tqdm, BarExt};
-use ndarray::{Array, Axis, Zip};
 use once_cell::sync::Lazy;
 use rand::random;
 use reqwest::Client;
-use reqwest::header::CONTENT_TYPE;
 use serde_json::{json, Value};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteQueryResult};
+use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 use tokio::sync;
 use tokio::sync::Semaphore;
-use tokio::time::{sleep, sleep_until};
+use tokio::time::sleep;
 
 static SQLITE_DB: sync::OnceCell<Arc<Mutex<SqlitePool>>> = sync::OnceCell::const_new();
 const DATA_PATH: &str = r#"D:\helloproject-ai-data"#;
 
 static SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(300)));
 static GEMINI_API_KEY: Lazy<String> = Lazy::new(|| env::var("GEMINI_API_KEY").expect("Please set GEMINI_API_KEY."));
-// static GEMINI_BEARER_TOKEN: Lazy<String> = Lazy::new(|| env::var("GEMINI_BEARER_TOKEN").expect("Please set GEMINI_BEARER_TOKEN."));
 
 static COUNTER_MAP: Lazy<Arc<Mutex<HashMap<String, (i32, i32)>>>> = Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 static REQUEST_JSON: Lazy<Value> = Lazy::new(|| json! {
@@ -48,7 +43,6 @@ static REQUEST_JSON: Lazy<Value> = Lazy::new(|| json! {
     ],
     "generationConfig": {
         "temperature": 1,
-        // "topK": 64,
         "topP": 0.95,
         "maxOutputTokens": 8192,
         "stopSequences": []
@@ -78,7 +72,6 @@ async fn article_make_overview(article: String, author: String, article_id: i64,
     let _permit = SEMAPHORE.acquire().await.unwrap();
     {
         let mut bar = progress.lock().unwrap();
-        // bar.desc = author;
         bar.update(1).unwrap();
         let mut counter = COUNTER_MAP.lock().unwrap();
         (*counter.get_mut(&author).unwrap()) = (counter.get_mut(&author).unwrap().0 + 1, counter.get_mut(&author).unwrap().1);
@@ -87,24 +80,18 @@ async fn article_make_overview(article: String, author: String, article_id: i64,
     }
     if author == "ブログ" || author == "お知らせ" { return; }
     let func_start = Instant::now();
-    // let api_url = format!("https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/gemini-1.5-flash:generateContent", "us-central1", "gen-lang-client-0379715435", "us-central1");
     let api_url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}", GEMINI_API_KEY.clone());
 
     let mut request = REQUEST_JSON.clone();
     request["contents"][0]["parts"][0]["text"] = Value::from(request["contents"][0]["parts"][0]["text"].as_str().unwrap().replace("###", author.as_str()));
     request["contents"][0]["parts"][1]["text"] = Value::from(format!("input: {}", article));
-    // println!("{}", serde_json::to_string_pretty(&request).unwrap());
-    // let mut res = client.post(api_url).json(&request).bearer_auth(GEMINI_BEARER_TOKEN.clone()).send().await.unwrap();
     let mut res = client.post(api_url).json(&request).send().await.unwrap();
-    // println!("{}",GEMINI_BEARER_TOKEN.clone());
-    // println!("{:?}", res.headers());
     let res_json: Value = res.json().await.unwrap();
     match res_json["candidates"][0]["content"]["parts"][0]["text"].as_str() {
         None => {
             println!("{}", serde_json::to_string_pretty(&res_json.clone()).unwrap());
         }
         Some(text) => {
-            // println!("{} {}", author, title);
             loop {
                 match sqlx::query("UPDATE processed_blog SET article_overview = ? WHERE article_id = ?;").bind(text.replace(" - ", "").replace("- ", "")).bind(article_id)
                     .execute(&(|| {
@@ -126,8 +113,6 @@ async fn article_make_overview(article: String, author: String, article_id: i64,
         sleep(Duration::from_millis(100)).await;
         if progress.lock().unwrap().completed() { return; }
     }
-    // sleep_until((func_start + Duration::from_secs(60 + random::<u64>() % 10)).into()).await;
-    ()
 }
 
 #[tokio::main]
@@ -146,7 +131,6 @@ async fn main() {
     }).count();
     let mut joins = vec![];
     let client = reqwest::Client::new();
-    // let sample = articles.into_iter().take(1).collect::<Vec<_>>();
     let progress = Arc::new(Mutex::new(tqdm!(total=articles.len(),desc="get overview...",animation="ascii",force_refresh=true,leave=false,ncols=150u16)));
     for (article_id, article, author) in articles {
         let progress_clone = Arc::clone(&progress);

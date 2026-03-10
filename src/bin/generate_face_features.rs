@@ -1,4 +1,3 @@
-// use ameba_blog_downloader::data_dir;
 use bincode::{config, Decode, Encode};
 use fast_image_resize::images::Image as fir_Image;
 use fast_image_resize::{PixelType, ResizeOptions};
@@ -30,56 +29,6 @@ static DECODE_FORMAT: PixelFormat = PixelFormat::RGB;
 static INFERENCE_SIZE: usize = 112;
 static FACE_FEATURE_MODEL: &[u8] = include_bytes!(r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Export\onnx_dest\arcface_unpg_f16_with_fp32_io.onnx");
 
-
-// async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(String, u128)>)>, sender: Sender<(Array<f32, IxDyn>, Vec<(String, u128)>)>) {
-//     ort::init().commit().unwrap();
-//     let buf_size = 16;
-//     let mut model = Session::builder().unwrap()
-//         .with_execution_providers([
-//             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
-//         ]).unwrap()
-//         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
-//         .with_intra_threads(buf_size).unwrap()
-//         .commit_from_memory(FACE_FEATURE_MODEL).unwrap();
-// 
-//     let mut futures = VecDeque::new();
-//     let infer = async |(tensor, metas)| {
-//         let opt = RunOptions::new().unwrap();
-//         
-//         let resp = model.run_async(inputs! {"input"=>tensor},&opt).unwrap().await.unwrap();
-//         let out_tensor = resp.get("output").unwrap().try_extract_array::<f32>().unwrap().view().into_owned();
-//         // sender.send((out_tensor, paths)).unwrap();
-//         (out_tensor, metas)
-//     };
-// 
-//     while match receiver.try_recv() {
-//         Ok(t) => {
-//             if t.1.is_empty() { false } else {
-//                 futures.push_back(infer(t));
-//                 true
-//             }
-//         }
-//         Err(_) => {
-//             let mut cnt = 0;
-//             while match futures.pop_front() {
-//                 None => { false }
-//                 Some(future) => {
-//                     let (tensor, metas) = future.await;
-//                     sender.send((tensor, metas)).unwrap();
-//                     cnt += 1;
-//                     true
-//                 }
-//             } && cnt < buf_size {}
-//             true
-//         }
-//     } {}
-//     for future in futures {
-//         let (tensor, metas) = future.await;
-//         sender.send((tensor, metas)).unwrap();
-//     }
-//     println!("fin inference");
-//     sender.send((Array::default([0]).into_dyn(), vec![])).unwrap();
-// }
 async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(String, u128)>)>, sender: Sender<(Array<f32, IxDyn>, Vec<(String, u128)>)>) {
     ameba_blog_downloader::init_ort();
     let mut model = Session::builder().unwrap()
@@ -87,7 +36,7 @@ async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(String, u128)>)>, sende
             OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
         ]).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
-        .with_intra_threads(16).unwrap() // Using a fixed number, original was tied to buf_size
+        .with_intra_threads(16).unwrap()
         .commit_from_memory(FACE_FEATURE_MODEL).unwrap();
 
     let opt = RunOptions::new().unwrap();
@@ -125,7 +74,6 @@ fn collector(receiver: Receiver<(Array<f32, IxDyn>, Vec<(String, u128)>)>, entit
                 0 => { false }
                 _ => {
                     for (order, (path, hash)) in metas.into_iter().enumerate() {
-                        // println!("{:?}", path);
                         bar.update(1).unwrap();
                         entities.0.insert(Entity { file_name: path, file_hash: hash, embeddings: tensor.slice(s![order,..]).to_vec() });
                     };
@@ -169,8 +117,6 @@ async fn main() {
                 _ => {}
             }
         });
-
-        // if member_dir.file_name().to_str().unwrap() == "上國料萌衣" { break; };
     }
 
     let (decode_sender, inference_receiver) = mpsc::sync_channel(100);
@@ -207,14 +153,12 @@ async fn main() {
                                                    (resize_scale * decoded.height() as f64).round() as u32,
                                                    PixelType::U8x3);
             resizer.resize(&decoded, &mut resized_image, &ResizeOptions::default()).unwrap();
-            // raw_images.push(resized_image);
             let pad_x = (INFERENCE_SIZE - resized_image.width() as usize).div_ceil(2);
             let pad_y = (INFERENCE_SIZE - resized_image.height() as usize).div_ceil(2);
             let image_tensor = Array3::from_shape_vec([resized_image.height() as usize, resized_image.width() as usize, 3usize], resized_image.buffer().to_vec()).unwrap().mapv(|v| v as f32 / 225.0);
             tensor.slice_mut(s![order,..,pad_y..pad_y+resized_image.height() as usize,pad_x..pad_x+resized_image.width() as usize]).assign(&image_tensor.permuted_axes([2, 0, 1]));
         }
         let tensor = Tensor::from_array(tensor).unwrap();
-        // println!("decode_sender.send");
         decode_sender.send((tensor, file_names.iter().map(|(path, _, hash)| { (path.clone(), hash.clone()) }).collect::<Vec<_>>())).unwrap();
     });
     decode_sender.send((Tensor::from_array(array![[[[0.0]]]]).unwrap(), vec![])).unwrap();

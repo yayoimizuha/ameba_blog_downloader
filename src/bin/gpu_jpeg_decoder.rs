@@ -1,12 +1,8 @@
-// use itertools::Itertools;
-// use std::any::type_name;
 use ameba_blog_downloader::data_dir;
 use itertools::Itertools;
 use std::fs;
 use std::time::Instant;
 use zerocopy::IntoBytes;
-
-// static CHECK_ARRAY: fn(&[u8], &[u8]) -> bool = |right: &[u8], left: &[u8]| right.iter().zip_eq(left).all(|(a, b)| a == b);
 
 #[allow(unused_macros)]
 macro_rules! assert_bytes {
@@ -35,7 +31,6 @@ enum IfdDtype {
 
 macro_rules! repr_ifd_dtype {
     ($data_type:ty,$data_size:expr,$val_or_offset:expr,$later:expr) => {{
-        // println!("sizeof::<{}>()={}",type_name::<$data_type>(),size_of::<$data_type>());
         if size_of::<$data_type>() * $data_size < 4 {
             &$val_or_offset[0..size_of::<$data_type>() * $data_size as usize]
         } else {
@@ -84,8 +79,6 @@ impl IfdDtype {
 }
 
 fn main() {
-    // let file = include_bytes!("test.jpg");
-    // parse_jpeg(include_bytes!("test.jpg"));
     let image_dir = data_dir().join("blog_images").read_dir().unwrap().map(|dir| dir.unwrap().path().read_dir().unwrap().into_iter().map(|file| file.unwrap().path())).flatten().collect::<Vec<_>>();
     let start = Instant::now();
     let _ = image_dir
@@ -97,19 +90,6 @@ fn main() {
         })
         .collect::<Vec<_>>();
     println!("{:?}", Instant::now() - start)
-    // println!("size_of::<u8>()={}", size_of::<u8>());
-    // for word in file.chunks(8) {
-    //     for byte in word {
-    //         print!("{:02X} ", byte);
-    //     }
-    //     println!();
-    //     break;
-    // }
-    //
-    // assert_bytes!(ptr, file, "FFD8");
-    // ptr += 2;
-    //
-    // println!("{}", u16::from_be_bytes(<[u8; 2]>::try_from(&file[ptr..ptr + 2]).unwrap()));
 }
 static LOG_LEVEL: i64 = 5; // 2~5
 fn parse_jpeg(file: &[u8]) {
@@ -232,7 +212,6 @@ fn parse_jpeg(file: &[u8]) {
                         let data_type = u16::from_be_bytes(<[u8; 2]>::try_from(&entry[2..4]).unwrap());
                         let data_size = u16::from_be_bytes(<[u8; 2]>::try_from(&entry[6..8]).unwrap());
                         let val_or_offset = &entry[8..];
-                        // println!("\t\ttag: {tag:#04X}\tdata_type: {data_type}\tdata_size: {data_size}\tval_or_offset: {}", val_or_offset.into_iter().map(|v| format!("{v:02X} ")).join(""));
                         print_indent!(3, 4, "{:#04X}:{:?}", tag, IfdDtype::new(data_type, data_size, &val_or_offset, &later[8..]));
                     }
                     ifd_offset = u32::from_be_bytes(<[u8; 4]>::try_from(&ifd_block[2 + entry_count * 12..6 + entry_count * 12]).unwrap()) as usize;
@@ -274,7 +253,6 @@ fn parse_jpeg(file: &[u8]) {
                 print_indent!(1, 2, "approximation spectral shift: {approx_spectral_shift}");
                 let spectral_shift = later[5 + component_count as usize * 2] & 0xFF;
                 print_indent!(1, 2, "spectral shift: {spectral_shift}");
-                // ptr += 2 + segment_size as usize;
                 let mcus = [later[segment_size as usize..].windows(2).filter_map(|window| {
                     let (a, b) = (window[0], window[1]);
                     match a == 0xFF {
@@ -296,23 +274,6 @@ fn parse_jpeg(file: &[u8]) {
                     }
                 }).collect::<Vec<_>>(), vec![*later.last().unwrap()]].concat();
                 ptr +=  later.len();
-                // for pos in segment_size as usize..later.len() {
-                //     if later[pos] == 0xFF {
-                //         match later[pos + 1] {
-                //             0x00 => {}
-                //             _rst_id @ 0xD0..0xD8 => {
-                //                 println!("\tRST{} marker @ {:#08X} detected. skip...", _rst_id - 0xD0, ptr + 2 + pos);
-                //             }
-                //             0xD9 => {
-                //                 break
-                //             }
-                //             _ => {
-                //                 ptr += 2 + pos;
-                //                 break;
-                //             }
-                //         }
-                //     }
-                // }
             }
             [0xFF, app_id @ 0xE0..=0xEF, later @ ..] => {
                 print_indent!(0, 1, "APP{0} (Application type {0} segment [FF {app_id:02X}]) detected. @ {1:#08X}", app_id - 0xE0, ptr);

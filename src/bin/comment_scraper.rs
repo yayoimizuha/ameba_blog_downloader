@@ -77,7 +77,6 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
     let head = client.get(&comment_url).send().await.unwrap().text().await.unwrap();
     match serde_json::from_str::<Value>(head.as_str()).unwrap().get("commentMap") {
         None => {
-            // eprintln!("no data at {comment_url}");
             download_progress.lock().unwrap().update(1).unwrap();
             return;
         }
@@ -87,7 +86,6 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
         Ok(x) => { x }
         Err(err) => {
             eprintln!("{} at {}", err, comment_url);
-            // eprintln!("{}", head);
             download_progress.lock().unwrap().update(1).unwrap();
             return;
         }
@@ -100,7 +98,6 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
         Ok(x) => { x }
         Err(err) => {
             eprintln!("{} at {}", err, comment_url);
-            // eprintln!("{}", main_query);
             download_progress.lock().unwrap().update(1).unwrap();
             return;
         }
@@ -110,7 +107,6 @@ async fn download_comments(client: Client, comment_url: String, article_id: i64,
         let mut trans = block_on(sqlite_db.deref().begin()).unwrap();
 
         for (comment_id, comment_element) in main_query_json.comment_map {
-            // println!("{:?}", comment_element);
             let (user_id, nickname) = {
                 match comment_element.comment_author {
                     None => { (None::<i64>, Some(comment_element.comment_name)) }
@@ -149,14 +145,10 @@ async fn main() {
         Arc::new(Mutex::new(SqlitePool::connect_with(option).await.unwrap()))
     }).await;
     let client = Client::new();
-    // let res = client.get("https://ameblo.jp/_api/blogComments;amebaId=juicejuice-official;blogId=10039630379;entryId=11618721121;excludeReplies=false;limit=1;offset=0").send().await.unwrap();
-    // let deserialized = serde_json::from_str::<CommentsJson>(res.text().await.unwrap().as_str()).unwrap();
-    // println!("{:?}", deserialized);
     let comment_urls = sqlx::query_as("SELECT m.article_id, m.updated_datetime, m.comment_downloaded, m.comment_url, b.date FROM manage m JOIN blog b on m.article_id = b.article_id")
         .fetch_all(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap().iter().map(|(article_id, updated_datetime, comment_downloaded, comment_url, page_datetime): &(i64, String, bool, String, String)| {
         (*article_id, DateTime::parse_from_rfc3339(&*updated_datetime.clone()), *comment_downloaded, comment_url.clone(), DateTime::parse_from_rfc3339(&*page_datetime.clone()).unwrap())
     }).collect::<Vec<_>>();
-    // println!("{:?}", comment_urls[0]);
     let download_urls = comment_urls.into_iter().filter_map(|x| {
         let (_, updated_datetime, comment_downloaded, _, page_datetime) = x.clone();
         if comment_downloaded {
@@ -171,14 +163,8 @@ async fn main() {
         }
     }).collect::<Vec<_>>();
     let download_progress = Arc::new(Mutex::new(tqdm!(total=download_urls.len(),desc="comment downloading...",animation="ascii",force_refresh=true,leave=false)));
-    // for (article_id, _, _, comment_url, _) in download_urls {
-    //     println!("{}", comment_url);
-    // let cloned_progress = Arc::new(&download_progress);
-    //
-    // };
     join_all(download_urls.into_iter().map(|(article_id, _, _, comment_url, _)| {
         let cloned_progress = Arc::clone(&download_progress);
         tokio::spawn(download_comments(client.clone(), comment_url, article_id, cloned_progress))
     })).await;
-    ()
 }

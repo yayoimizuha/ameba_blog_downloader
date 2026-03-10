@@ -1,7 +1,6 @@
 use std::env;
 use std::ops::Deref;
 use std::path::Path;
-use std::string::ToString;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use futures::future::join_all;
@@ -29,7 +28,6 @@ static REQUEST_JSON: Lazy<Value> = Lazy::new(|| json! {{
   "instances": [
     {
       "task_type": "CLUSTERING",
-      // "title": "document title",
       "content": ""
     },
   ]
@@ -37,13 +35,10 @@ static REQUEST_JSON: Lazy<Value> = Lazy::new(|| json! {{
 });
 
 async fn update_bearer() {
-    // let cred_path = Path::new("./gen-lang-client-0379715435-e27b574bf00a.json");
-    // println!("{:?}", cred_path);
     (*GCP_TOKEN.lock().unwrap()).1 = Instant::now();
     let token = gcp_access_token::generator::init_json(&json::parse(include_str!("../../gen-lang-client-0379715435-1627903c0a51.json")).unwrap(), "https://www.googleapis.com/auth/cloud-platform".into()).await.unwrap();
     println!("updated token: {}", json::stringify_pretty(token.clone(), 0).replace("\n", ""));
     (*GCP_TOKEN.lock().unwrap()).0 = token["access_token"].as_str().unwrap().into();
-    // GCP_TOKEN.set(Arc::new(Mutex::new((token["access_token"].as_str().unwrap().into(), Instant::now())))).unwrap()
 }
 
 async fn get_embedding(article: String, column: String, article_id: i64, client: Client, progress: Arc<Mutex<Bar>>) {
@@ -51,7 +46,6 @@ async fn get_embedding(article: String, column: String, article_id: i64, client:
     let token;
     {
         let (tok, exp) = GCP_TOKEN.lock().unwrap().clone();
-        // println!("{:?} {:?}", exp, Instant::now());
         if (Instant::now() - exp).as_secs() > 3500 {
             update_bearer().await;
             token = GCP_TOKEN.lock().unwrap().clone().0;
@@ -60,17 +54,11 @@ async fn get_embedding(article: String, column: String, article_id: i64, client:
         }
     }
     let func_start = Instant::now();
-    // let api_url = format!("https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/gemini-1.5-flash:generateContent", "us-central1", "gen-lang-client-0379715435", "us-central1");
     let api_url = format!("https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{REGION}/publishers/google/models/text-embedding-preview-0409:predict");
-    // println!("{}", api_url);
 
     let mut request = REQUEST_JSON.clone();
     request["instances"][0]["content"] = Value::from(article.clone());
-    // println!("{}", serde_json::to_string_pretty(&request).unwrap());
-    // let mut res = client.post(api_url).json(&request).bearer_auth(GEMINI_BEARER_TOKEN.clone()).send().await.unwrap();
     let res = client.post(api_url).json(&request).bearer_auth(token).send().await.unwrap();
-    // println!("{}",GEMINI_BEARER_TOKEN.clone());
-    // println!("{:?}", res.headers());
     let res_json: Value = match res.json().await {
         Err(e) => {
             eprintln!("{}", e);
@@ -79,8 +67,7 @@ async fn get_embedding(article: String, column: String, article_id: i64, client:
         }
         Ok(x) => x
     };
-    // println!("{}", serde_json::to_string_pretty(&res_json).unwrap());
-    if !res_json["predictions"][0]["embeddings"].as_object().is_some() {
+    if res_json["predictions"][0]["embeddings"].as_object().is_none() {
         println!("{} {}", article_id, serde_json::to_string(&res_json).unwrap());
         progress.lock().unwrap().update(1).unwrap();
         return;
@@ -96,8 +83,6 @@ async fn get_embedding(article: String, column: String, article_id: i64, client:
         }
         Some(vector) => {
             loop {
-                // println!("{:?}", vector);
-                // println!("{} {}", article_id, serde_json::to_string(&res_json["predictions"][0]["embeddings"]["statistics"]).unwrap());
                 let vector_dump = vector.iter().map(|v| (v.as_f64().unwrap() as f32).to_le_bytes()).flatten().collect::<Vec<_>>();
                 match sqlx::query(format!("UPDATE processed_blog SET {column} = ? WHERE article_id = ?;").as_str())
                     .bind(vector_dump).bind(article_id)
@@ -123,7 +108,6 @@ async fn get_embedding(article: String, column: String, article_id: i64, client:
         sleep(Duration::from_millis(100)).await;
         if progress.lock().unwrap().completed() { return; }
     }
-    ()
 }
 
 static TARGET: Lazy<String> = Lazy::new(|| env::args().collect::<Vec<_>>().get(1).expect("Please set \"cleaned\" or \"overview\" for the argument.").to_string());
@@ -141,7 +125,6 @@ async fn main() {
         .fetch_all(SQLITE_DB.get().unwrap().lock().unwrap().deref()).await.unwrap().iter().map(|(id, text): &(i64, String)| (*id, text.clone())).collect::<Vec<_>>();
     let mut joins = vec![];
     let client = reqwest::Client::new();
-    // let sample = articles.into_iter().take(1).collect::<Vec<_>>();
     let progress = Arc::new(Mutex::new(tqdm!(total=articles.len(),desc="get embedding...",animation="ascii",force_refresh=true,leave=false)));
 
     for (article_id, article) in articles {
