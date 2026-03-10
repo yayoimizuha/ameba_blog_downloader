@@ -173,7 +173,6 @@ fn build_trt_session() -> Session {
             .with_timing_cache_path("trt_cache")
             .with_build_heuristics(true)
             .with_context_memory_sharing(true)
-            .with_cuda_graph(true)
             .with_profile_min_shapes(&shape_min)
             .with_profile_opt_shapes(&shape_opt)
             .with_profile_max_shapes(&shape_max)
