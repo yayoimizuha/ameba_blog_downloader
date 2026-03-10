@@ -2,15 +2,15 @@ use super::found_face::FoundFace;
 use crate::retinaface::nms_copy::nms;
 use anyhow::Result;
 use itertools::{enumerate, iproduct};
-use ndarray::{arr1, arr2, array, concatenate, s, Array, Array1, Array2, Array4, Axis, Ix1, Ix2, Ix4, IxDyn};
-use num_traits::{AsPrimitive, Float, FromPrimitive, Num, ToPrimitive};
+use ndarray::{arr2, array, concatenate, s, Array, Array2, Array4, Axis, Ix1, Ix2, IxDyn};
+use num_traits::AsPrimitive;
 use ort::inputs;
-use ort::session:: Session;
+use ort::session::Session;
 
 use ort::value::{Tensor, Value};
+use std::f32;
 use std::ops::{Div, Mul};
 use std::time::Instant;
-use std::f32;
 use tracing::debug;
 
 use zune_image::codecs::bmp::zune_core::options::DecoderOptions;

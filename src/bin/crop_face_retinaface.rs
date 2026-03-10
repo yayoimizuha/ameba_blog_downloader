@@ -29,9 +29,8 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{Tensor, Value};
 use rayon::prelude::*;
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::SqlitePool;
 use tracing::debug;
 use turbojpeg::{Decompressor, Image, PixelFormat};
 use twox_hash::xxhash3_128::Hasher as XxHash3_128;
@@ -99,14 +98,9 @@ fn compute_image_hash(jpeg_bytes: &[u8]) -> u128 {
 }
 
 /// キャッシュ DB を開き、テーブルを作成する
-async fn open_cache_db(db_path: &std::path::Path) -> SqlitePool {
-    let opts = SqliteConnectOptions::new()
-        .create_if_missing(true)
-        .filename(db_path);
-    let pool = SqlitePool::connect_with(opts)
-        .await
-        .expect("キャッシュ DB を開けません");
-    sqlx::query(
+fn open_cache_db(db_path: &std::path::Path) -> Connection {
+    let conn = Connection::open(db_path).expect("キャッシュ DB を開けません");
+    conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS face_cache (
             model_hash TEXT NOT NULL,
             image_hash TEXT NOT NULL,
@@ -114,40 +108,34 @@ async fn open_cache_db(db_path: &std::path::Path) -> SqlitePool {
             PRIMARY KEY (model_hash, image_hash)
         );",
     )
-    .execute(&pool)
-    .await
     .expect("キャッシュテーブルの作成に失敗");
-    pool
+    conn
 }
 
 /// キャッシュから顔検出結果を読み込む。キャッシュミスなら None。
-async fn load_cached_faces(
-    pool: &SqlitePool,
+fn load_cached_faces(
+    conn: &Connection,
     model_hash: &str,
     image_hash: u128,
 ) -> Option<Vec<FoundFace>> {
     let hash_str = format!("{:032x}", image_hash);
-    let row: Option<(Vec<u8>,)> = sqlx::query_as(
-        "SELECT faces FROM face_cache WHERE model_hash = ? AND image_hash = ?;",
-    )
-    .bind(model_hash)
-    .bind(&hash_str)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
-
-    row.map(|(blob,)| {
+    let mut stmt = conn
+        .prepare_cached("SELECT faces FROM face_cache WHERE model_hash = ?1 AND image_hash = ?2")
+        .expect("プリペアドステートメントの作成に失敗");
+    let blob: Option<Vec<u8>> = stmt
+        .query_row(rusqlite::params![model_hash, hash_str], |row| row.get(0))
+        .ok();
+    blob.map(|b| {
         let (faces, _): (Vec<FoundFace>, _) =
-            bincode::serde::decode_from_slice(&blob, bincode::config::standard())
+            bincode::serde::decode_from_slice(&b, bincode::config::standard())
                 .expect("キャッシュのデシリアライズに失敗");
         faces
     })
 }
 
 /// 顔検出結果をキャッシュに保存する
-async fn save_cached_faces(
-    pool: &SqlitePool,
+fn save_cached_faces(
+    conn: &Connection,
     model_hash: &str,
     image_hash: u128,
     faces: &[FoundFace],
@@ -155,14 +143,11 @@ async fn save_cached_faces(
     let hash_str = format!("{:032x}", image_hash);
     let blob = bincode::serde::encode_to_vec(faces, bincode::config::standard())
         .expect("キャッシュのシリアライズに失敗");
-    let _ = sqlx::query(
-        "INSERT OR REPLACE INTO face_cache (model_hash, image_hash, faces) VALUES (?, ?, ?);",
+    conn.execute(
+        "INSERT OR REPLACE INTO face_cache (model_hash, image_hash, faces) VALUES (?1, ?2, ?3)",
+        rusqlite::params![model_hash, hash_str, blob],
     )
-    .bind(model_hash)
-    .bind(&hash_str)
-    .bind(&blob)
-    .execute(pool)
-    .await;
+    .expect("キャッシュの保存に失敗");
 }
 
 // ============================================================================
@@ -246,7 +231,7 @@ fn build_miss_tensor(full_tensor: &Tensor<f32>, miss_indices: &[usize]) -> Tenso
 /// 推論スレッドのメインループ。
 /// キャッシュヒットはスキップし、ミス分のみ推論→post_process→キャッシュ保存を行い、
 /// 統合結果を crop_and_export スレッドに送信する。
-async fn inference_loop(
+fn inference_loop(
     receiver: Receiver<InferenceBatch>,
     sender: SyncSender<FaceDetectionBatch>,
     model_hash: String,
@@ -265,7 +250,7 @@ async fn inference_loop(
         model: ModelKind::ResNet,
     };
 
-    let pool = open_cache_db(&cache_db_path).await;
+    let conn = open_cache_db(&cache_db_path);
 
     while let Ok((tensor, paths, image_hashes)) = receiver.recv() {
         // 空パスは終了シグナル
@@ -276,10 +261,10 @@ async fn inference_loop(
         let full_shape: Vec<usize> = tensor.shape().iter().map(|&v| v as usize).collect();
 
         // 各画像のキャッシュを検索
-        let mut cached: Vec<Option<Vec<FoundFace>>> = Vec::with_capacity(image_hashes.len());
-        for &h in &image_hashes {
-            cached.push(load_cached_faces(&pool, &model_hash, h).await);
-        }
+        let cached: Vec<Option<Vec<FoundFace>>> = image_hashes
+            .iter()
+            .map(|&h| load_cached_faces(&conn, &model_hash, h))
+            .collect();
 
         let miss_indices: Vec<usize> = cached
             .iter()
@@ -315,12 +300,11 @@ async fn inference_loop(
             // キャッシュに保存
             for (order, &orig_idx) in miss_indices.iter().enumerate() {
                 save_cached_faces(
-                    &pool,
+                    &conn,
                     &model_hash,
                     image_hashes[orig_idx],
                     &miss_faces[order],
-                )
-                .await;
+                );
             }
 
             miss_faces
@@ -625,11 +609,8 @@ fn main() {
     // 推論スレッド起動
     let mh = model_hash.clone();
     let cd = cache_db_path.clone();
-    let inference_handle = thread::spawn(move || {
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(inference_loop(infer_rx, infer_tx, mh, cd))
-    });
+    let inference_handle =
+        thread::spawn(move || inference_loop(infer_rx, infer_tx, mh, cd));
 
     // クロップ＆エクスポートスレッド起動
     let file_count = all_files.len();

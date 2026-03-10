@@ -68,6 +68,7 @@ hdf5-metno = { version = "*", features = ["static"] }
 clap = { version = "*" }
 #usls = { version = "0.1.0-beta.1" }
 bincode = { version = "*", features = ["serde"] }
+rusqlite = { version = "*", features = ["bundled"] }
 twox-hash = { version = "*", features = ["xxhash3_128"] }
 [dependencies.ort]
 version = "=2.0.0-rc.12"
