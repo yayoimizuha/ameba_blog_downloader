@@ -37,7 +37,7 @@ use imageproc::drawing::draw_hollow_polygon_mut;
 use imageproc::point::Point;
 use once_cell::sync::Lazy;
 
-const BATCH_SIZE: usize = 32;
+const BATCH_SIZE: usize = 128;
 const LARGE_BATCH_SIZE: usize = BATCH_SIZE * 32;
 const DECODE_FORMAT: PixelFormat = PixelFormat::RGB;
 const INFERENCE_SIZE: usize = 640;
@@ -134,13 +134,37 @@ async fn inference(
     cache_dir: PathBuf,
 ) {
     ameba_blog_downloader::init_ort();
+    // Dynamic shape profile: input shape is (N, 3, INFERENCE_SIZE, INFERENCE_SIZE)
+    // min=batch 1, opt/max=BATCH_SIZE
+    let s = INFERENCE_SIZE;
+    let b = BATCH_SIZE;
+    let shape_min = format!("input:1x3x{s}x{s}");
+    let shape_opt = format!("input:{b}x3x{s}x{s}");
+    let shape_max = format!("input:{b}x3x{s}x{s}");
     let mut model = Session::builder()
         .unwrap()
         .with_execution_providers([
             TensorRTExecutionProvider::default()
-                .with_engine_cache(true)
+                // ワークスペースを2GBに拡張（デフォルト1GB）
+                .with_max_workspace_size(2 * 1024 * 1024 * 1024)
+                // FP16推論を有効化
                 .with_fp16(true)
+                // エンジンキャッシュ：初回ビルド後の再利用でセッション生成を高速化
+                .with_engine_cache(true)
                 .with_engine_cache_path("trt_cache")
+                // タイミングキャッシュ：カーネル選択の計測結果を再利用してビルド時間を短縮
+                .with_timing_cache(true)
+                .with_timing_cache_path("trt_cache")
+                // ビルドヒューリスティクス：ビルド時間をさらに削減
+                .with_build_heuristics(true)
+                // サブグラフ間でコンテキストメモリを共有してGPUメモリ使用量を削減
+                .with_context_memory_sharing(true)
+                // CUDAグラフキャプチャ：CPUカーネル起動オーバーヘッドを削減
+                .with_cuda_graph(true)
+                // 動的シェイププロファイル：バッチ1〜BATCH_SIZE、空間サイズはINFERENCE_SIZE固定
+                .with_profile_min_shapes(&shape_min)
+                .with_profile_opt_shapes(&shape_opt)
+                .with_profile_max_shapes(&shape_max)
                 .build()
                 .error_on_failure(),
             // OpenVINOExecutionProvider::default()
