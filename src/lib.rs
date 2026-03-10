@@ -1,10 +1,10 @@
 extern crate alloc;
 
-use std::env;
-use std::path::PathBuf;
-use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use bincode::{Decode, Encode};
+use std::collections::HashSet;
+use std::env;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 
 pub mod retinaface;
 
@@ -26,11 +26,12 @@ pub fn data_dir() -> PathBuf {
 }
 
 pub fn project_dir() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        PathBuf::from(r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader"#)
-    } else if cfg!(target_os = "linux") {
-        PathBuf::from(r#"/home/tomokazu/RustroverProjects/ameba_blog_downloader"#)
-    } else { unreachable!() }
+    // if cfg!(target_os = "windows") {
+    //     PathBuf::from(r#"C:\Users\tomokazu\RustroverProjects\ameba_blog_downloader"#)
+    // } else if cfg!(target_os = "linux") {
+    //     PathBuf::from(r#"/home/tomokazu/RustroverProjects/ameba_blog_downloader"#)
+    // } else { unreachable!() }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 #[derive(Encode, Decode, Debug)]
 pub struct Entity {
