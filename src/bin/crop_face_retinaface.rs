@@ -15,7 +15,7 @@ use std::thread;
 
 use fast_image_resize::images::Image as FirImage;
 use fast_image_resize::{PixelType, ResizeOptions};
-use image::imageops::crop_imm;
+use image::imageops::{crop_imm, replace};
 use image::{Rgb, RgbImage};
 use imageproc::geometric_transformations::{rotate, Interpolation};
 use itertools::Itertools;
@@ -23,7 +23,7 @@ use kdam::{tqdm, BarExt};
 use ndarray::Array4;
 use num_traits::FloatConst;
 use once_cell::sync::Lazy;
-use ort::ep::TensorRTExecutionProvider;
+use ort::ep::{CPUExecutionProvider, OpenVINOExecutionProvider, TensorRTExecutionProvider};
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -164,20 +164,28 @@ fn build_trt_session() -> Session {
 
     Session::builder()
         .unwrap()
-        .with_execution_providers([TensorRTExecutionProvider::default()
-            .with_max_workspace_size(2 * 1024 * 1024 * 1024) // 2 GB
-            .with_fp16(true)
-            .with_engine_cache(true)
-            .with_engine_cache_path("trt_cache")
-            .with_timing_cache(true)
-            .with_timing_cache_path("trt_cache")
-            .with_build_heuristics(true)
-            .with_context_memory_sharing(true)
-            .with_profile_min_shapes(&shape_min)
-            .with_profile_opt_shapes(&shape_opt)
-            .with_profile_max_shapes(&shape_max)
-            .build()
-            .error_on_failure()])
+        .with_execution_providers([
+            // TensorRTExecutionProvider::default()
+            // .with_max_workspace_size(2 * 1024 * 1024 * 1024) // 2 GB
+            // .with_fp16(true)
+            // .with_engine_cache(true)
+            // .with_engine_cache_path("trt_cache")
+            // .with_timing_cache(true)
+            // .with_timing_cache_path("trt_cache")
+            // .with_build_heuristics(true)
+            // .with_context_memory_sharing(true)
+            // .with_profile_min_shapes(&shape_min)
+            // .with_profile_opt_shapes(&shape_opt)
+            // .with_profile_max_shapes(&shape_max)
+            // .build()
+            // .error_on_failure()
+            OpenVINOExecutionProvider::default()
+                .with_device_type("GPU")
+                .with_precision("FP16")
+                .build()
+                .error_on_failure(),
+            CPUExecutionProvider::default().build().error_on_failure(),
+        ])
         .unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .unwrap()
@@ -384,8 +392,8 @@ fn crop_faces(image: &RgbImage, scale: f32, faces: &[FoundFace]) -> Vec<RgbImage
     let inv = 1.0 / scale;
     faces
         .iter()
-        .filter(|f| f32::max(f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]) * inv >= 100.0)
-        .map(|face| {
+        .filter(|f| f32::min(f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]) * inv >= 100.0)
+        .filter_map(|face| {
             let angle = calc_tilt(face.landmarks) + f32::PI() / 2.0;
             let cx = (face.bbox[0] + face.bbox[2]) * inv / 2.0;
             let cy = (face.bbox[1] + face.bbox[3]) * inv / 2.0;
@@ -395,15 +403,31 @@ fn crop_faces(image: &RgbImage, scale: f32, faces: &[FoundFace]) -> Vec<RgbImage
                 (face.bbox[2] - face.bbox[0]) * inv,
                 (face.bbox[3] - face.bbox[1]) * inv,
             ) * 1.2) as u32;
+            if size == 0 {
+                return None;
+            }
             let half = size as f32 / 2.0;
-            crop_imm(
-                &rotated,
-                (cx - half) as u32,
-                (cy - half) as u32,
-                size,
-                size,
-            )
-            .to_image()
+
+            let x0 = (cx - half) as i32;
+            let y0 = (cy - half) as i32;
+            let img_w = rotated.width() as i32;
+            let img_h = rotated.height() as i32;
+
+            // 画像内に収まるクロップ矩形を計算
+            let src_x = x0.max(0).min(img_w) as u32;
+            let src_y = y0.max(0).min(img_h) as u32;
+            let src_w = ((x0 + size as i32).min(img_w) - src_x as i32).max(0) as u32;
+            let src_h = ((y0 + size as i32).min(img_h) - src_y as i32).max(0) as u32;
+
+            // 黒で初期化した出力画像にクロップ結果を貼り付ける（端の場合はパディング）
+            let mut padded = RgbImage::new(size, size);
+            if src_w > 0 && src_h > 0 {
+                let cropped = crop_imm(&rotated, src_x, src_y, src_w, src_h).to_image();
+                let dst_x = (src_x as i32 - x0) as i64;
+                let dst_y = (src_y as i32 - y0) as i64;
+                replace(&mut padded, &cropped, dst_x, dst_y);
+            }
+            Some(padded)
         })
         .collect()
 }
