@@ -1,12 +1,12 @@
 use anyhow::Result;
 use itertools::{enumerate, iproduct, Itertools};
-use ndarray::{arr1, arr2, array, concatenate, s, Array, Array2, Array4, Axis, Ix1, Ix2, IxDyn};
-use num_traits::{AsPrimitive, FromPrimitive, ToPrimitive};
+use ndarray::{arr2, array, concatenate, s, Array, Array2, Array4, Axis, Ix1, Ix2, IxDyn};
+use num_traits::AsPrimitive;
 use ort::inputs;
-use ort::session::{builder::GraphOptimizationLevel, Session};
-use std::ops::{Add, Div, Mul};
-use std::time::Instant;
+use ort::session::Session;
 use std::f32;
+use std::ops::{Div, Mul};
+use std::time::Instant;
 
 use ort::value::{Tensor, Value};
 use tracing::debug;

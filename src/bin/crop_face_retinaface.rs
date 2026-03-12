@@ -23,7 +23,7 @@ use kdam::{tqdm, BarExt};
 use ndarray::Array4;
 use num_traits::FloatConst;
 use once_cell::sync::Lazy;
-use ort::ep::{CPUExecutionProvider, OpenVINOExecutionProvider, TensorRTExecutionProvider};
+use ort::ep::{CPUExecutionProvider, OpenVINOExecutionProvider /* TensorRTExecutionProvider*/};
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -31,7 +31,7 @@ use ort::value::{Tensor, Value};
 use rayon::prelude::*;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
-use tracing::debug;
+use tracing::{debug, warn};
 use turbojpeg::{Decompressor, Image, PixelFormat};
 use twox_hash::xxhash3_128::Hasher as XxHash3_128;
 
@@ -51,7 +51,7 @@ use ndarray::{arr1, arr2};
 // 定数
 // ============================================================================
 
-const BATCH_SIZE: usize = 128;
+const BATCH_SIZE: usize = 32;
 const LARGE_BATCH_SIZE: usize = BATCH_SIZE * 32;
 const DECODE_FORMAT: PixelFormat = PixelFormat::RGB;
 const INFERENCE_SIZE: usize = 640;
@@ -156,11 +156,11 @@ fn save_cached_faces(
 
 /// TensorRT セッションを構築する
 fn build_trt_session() -> Session {
-    let s = INFERENCE_SIZE;
-    let b = BATCH_SIZE;
-    let shape_min = format!("input:1x3x{s}x{s}");
-    let shape_opt = format!("input:{b}x3x{s}x{s}");
-    let shape_max = format!("input:{b}x3x{s}x{s}");
+    // let s = INFERENCE_SIZE;
+    // let b = BATCH_SIZE;
+    // let shape_min = format!("input:1x3x{s}x{s}");
+    // let shape_opt = format!("input:{b}x3x{s}x{s}");
+    // let shape_max = format!("input:{b}x3x{s}x{s}");
 
     Session::builder()
         .unwrap()
@@ -266,6 +266,19 @@ fn inference_loop(
         }
 
         let full_shape: Vec<usize> = tensor.shape().iter().map(|&v| v as usize).collect();
+
+        // shape は [N, 3, INFERENCE_SIZE, INFERENCE_SIZE] のはず
+        if full_shape.len() != 4
+            || full_shape[1] != 3
+            || full_shape[2] != INFERENCE_SIZE
+            || full_shape[3] != INFERENCE_SIZE
+        {
+            warn!(
+                "inference_loop: 想定外の入力テンソル shape={:?} (期待: [N,3,{s},{s}])",
+                full_shape,
+                s = INFERENCE_SIZE,
+            );
+        }
 
         // 各画像のキャッシュを検索
         let cached: Vec<Option<Vec<FoundFace>>> = image_hashes
@@ -390,44 +403,57 @@ fn draw_rect(mut image: RgbImage, scale: f32, faces: &[FoundFace]) -> RgbImage {
 /// 検出された顔を回転補正してクロップする（100px 未満の顔はスキップ）
 fn crop_faces(image: &RgbImage, scale: f32, faces: &[FoundFace]) -> Vec<RgbImage> {
     let inv = 1.0 / scale;
+
+    // 元画像を 3 倍 × 3 倍のキャンバス中央に貼り付ける。
+    // 端に近い顔でも rotate() 後に顔領域が欠けなくなる。
+    let (orig_w, orig_h) = (image.width(), image.height());
+    let canvas_w = orig_w * 3;
+    let canvas_h = orig_h * 3;
+    let offset_x = orig_w as i64;
+    let offset_y = orig_h as i64;
+    let mut canvas = RgbImage::new(canvas_w, canvas_h);
+    replace(&mut canvas, image, offset_x, offset_y);
+
     faces
         .iter()
         .filter(|f| f32::min(f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]) * inv >= 100.0)
         .filter_map(|face| {
-            let angle = calc_tilt(face.landmarks) + f32::PI() / 2.0;
-            let cx = (face.bbox[0] + face.bbox[2]) * inv / 2.0;
-            let cy = (face.bbox[1] + face.bbox[3]) * inv / 2.0;
-            let rotated =
-                rotate(image, (cx, cy), -angle, Interpolation::Bilinear, Rgb([0, 0, 0]));
-            let size = (f32::max(
-                (face.bbox[2] - face.bbox[0]) * inv,
-                (face.bbox[3] - face.bbox[1]) * inv,
-            ) * 1.2) as u32;
+            let bbox_w = (face.bbox[2] - face.bbox[0]) * inv;
+            let bbox_h = (face.bbox[3] - face.bbox[1]) * inv;
+            let size = (f32::max(bbox_w, bbox_h) * 1.2) as u32;
             if size == 0 {
                 return None;
             }
-            let half = size as f32 / 2.0;
-
-            let x0 = (cx - half) as i32;
-            let y0 = (cy - half) as i32;
-            let img_w = rotated.width() as i32;
-            let img_h = rotated.height() as i32;
-
-            // 画像内に収まるクロップ矩形を計算
-            let src_x = x0.max(0).min(img_w) as u32;
-            let src_y = y0.max(0).min(img_h) as u32;
-            let src_w = ((x0 + size as i32).min(img_w) - src_x as i32).max(0) as u32;
-            let src_h = ((y0 + size as i32).min(img_h) - src_y as i32).max(0) as u32;
-
-            // 黒で初期化した出力画像にクロップ結果を貼り付ける（端の場合はパディング）
-            let mut padded = RgbImage::new(size, size);
-            if src_w > 0 && src_h > 0 {
-                let cropped = crop_imm(&rotated, src_x, src_y, src_w, src_h).to_image();
-                let dst_x = (src_x as i32 - x0) as i64;
-                let dst_y = (src_y as i32 - y0) as i64;
-                replace(&mut padded, &cropped, dst_x, dst_y);
+            // 画像の長辺の 4 倍を超えるサイズは明らかに異常な bbox
+            let img_max_dim = u32::max(orig_w, orig_h) * 4;
+            if size > img_max_dim {
+                warn!(
+                    "crop_faces: 異常なサイズ検出 size={} (img={}x{}) bbox={:?} inv={:.6} bbox_w={:.1} bbox_h={:.1}",
+                    size, orig_w, orig_h, face.bbox, inv, bbox_w, bbox_h
+                );
+                return None;
             }
-            Some(padded)
+
+            // 顔中心をキャンバス座標に変換
+            let cx = (face.bbox[0] + face.bbox[2]) * inv / 2.0 + offset_x as f32;
+            let cy = (face.bbox[1] + face.bbox[3]) * inv / 2.0 + offset_y as f32;
+
+            let angle = calc_tilt(face.landmarks) + f32::PI() / 2.0;
+            let rotated = rotate(&canvas, (cx, cy), -angle, Interpolation::Bilinear, Rgb([0, 0, 0]));
+
+            // キャンバス上での切り出し座標（常に範囲内に収まる）
+            let half = size as f32 / 2.0;
+            let x0 = (cx - half).round().max(0.0) as u32;
+            let y0 = (cy - half).round().max(0.0) as u32;
+            let x1 = (cx + half).round().min(canvas_w as f32) as u32;
+            let y1 = (cy + half).round().min(canvas_h as f32) as u32;
+            let crop_w = x1.saturating_sub(x0);
+            let crop_h = y1.saturating_sub(y0);
+            if crop_w == 0 || crop_h == 0 {
+                return None;
+            }
+
+            Some(crop_imm(&rotated, x0, y0, crop_w, crop_h).to_image())
         })
         .collect()
 }
@@ -628,13 +654,65 @@ fn main() {
 
     let cache_db_path = data_dir().join("face_cache.sqlite");
 
-    // 処理対象ファイルを収集
+    // 処理対象ファイルを収集（出力済みのものはスキップ）
+    let export_base = data_dir().join("face_cropped");
+    let conn_check = open_cache_db(&cache_db_path);
+    let mut header_decompressor = Decompressor::new().unwrap();
     let mut all_files = Vec::new();
     for entry in data_dir().join("blog_images").read_dir().unwrap() {
         for file in entry.unwrap().path().read_dir().unwrap() {
-            all_files.push(file.unwrap().path());
+            let path = file.unwrap().path();
+
+            // 入力パスから出力 stem を計算（crop_and_export と同じ計算）
+            let dest = export_base
+                .join(path.parent().unwrap().file_name().unwrap())
+                .join(path.file_name().unwrap());
+            let stem = dest.to_str().unwrap().rsplitn(2, '.').nth(1).unwrap();
+
+            let bin = match fs::read(&path) {
+                Ok(b) => b,
+                Err(_) => { all_files.push(path); continue; }
+            };
+            let image_hash = compute_image_hash(&bin);
+            let cached_faces = load_cached_faces(&conn_check, &model_hash, image_hash);
+
+            let skip = match &cached_faces {
+                None => false, // キャッシュミス → スキップ不可
+                Some(faces) => {
+                    // JPEG ヘッダから scale を求め、100px フィルタ後の正確な顔数を計算
+                    let scale = match header_decompressor.read_header(&bin) {
+                        Ok(hdr) => {
+                            let max_dim = hdr.width.max(hdr.height) as f64;
+                            f64::min(1.0, INFERENCE_SIZE as f64 / max_dim) as f32
+                        }
+                        Err(_) => { all_files.push(path); continue; }
+                    };
+                    let inv = 1.0 / scale;
+                    let expected = faces
+                        .iter()
+                        .filter(|f| {
+                            f32::min(f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]) * inv >= 100.0
+                        })
+                        .count();
+
+                    if expected == 0 {
+                        true // 顔なし → 出力ファイルは存在しないはず → スキップ可
+                    } else {
+                        (0..expected).all(|i| {
+                            std::path::Path::new(&format!("{stem}-{i:>02}.jpg")).exists()
+                        })
+                    }
+                }
+            };
+
+            if skip {
+                debug!("スキップ: {}", path.display());
+            } else {
+                all_files.push(path);
+            }
         }
     }
+    drop(conn_check);
 
     // チャネル構築
     let (decode_tx, infer_rx) = mpsc::sync_channel::<InferenceBatch>(40);

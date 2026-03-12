@@ -11,7 +11,7 @@ use ort::value::{Tensor, Value};
 use std::f32;
 use std::ops::{Div, Mul};
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use zune_image::codecs::bmp::zune_core::options::DecoderOptions;
 use zune_image::image::Image;
@@ -195,6 +195,25 @@ pub fn post_process(confidence: Array<f32, IxDyn>, loc: Array<f32, IxDyn>, landm
 
         let mut boxes = decode(loc.slice(s![i,..,..]).to_owned(), prior_box.clone(), variance);
         boxes = boxes * scale_bboxes.clone();
+
+        // bbox の最大値が画像サイズの 10 倍を超えたら loc の exp 爆発を疑う
+        let box_max = boxes.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let box_min = boxes.iter().cloned().fold(f32::INFINITY, f32::min);
+        let img_dim = f32::max(input_shape[2] as f32, input_shape[3] as f32);
+        if box_max.abs() > img_dim * 10.0 || box_min < -img_dim * 10.0 || box_max.is_nan() || box_max.is_infinite() {
+            warn!(
+                "post_process[{}]: bbox スケール後の値が異常 min={:.1} max={:.1} (画像サイズ={:.0}x{:.0})",
+                i, box_min, box_max, input_shape[3] as f32, input_shape[2] as f32
+            );
+            // loc 生値の統計も出力して原因を絞る
+            let loc_slice = loc.slice(s![i,..,..]).to_owned();
+            let loc_max = loc_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let loc_min = loc_slice.iter().cloned().fold(f32::INFINITY, f32::min);
+            warn!(
+                "post_process[{}]: loc 生値 min={:.4} max={:.4}",
+                i, loc_min, loc_max
+            );
+        }
 
         let mut scores = confidence.slice(s![i,..,1]).to_owned() as Array<f32, Ix1>;
 

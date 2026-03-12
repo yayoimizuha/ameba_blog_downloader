@@ -5,7 +5,7 @@ use fast_image_resize::{PixelType, ResizeOptions};
 use futures::future::join_all;
 use kdam::{tqdm, BarExt};
 use ndarray::{array, s, Array, Array3, Array4, IxDyn};
-use ort::ep::OpenVINOExecutionProvider;
+use ort::ep::TensorRTExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::{RunOptions, Session};
@@ -25,13 +25,34 @@ use twox_hash::XxHash3_128;
 static BATCH_SIZE: usize = 256;
 static DECODE_FORMAT: PixelFormat = PixelFormat::RGB;
 static INFERENCE_SIZE: usize = 112;
-static FACE_FEATURE_MODEL: &[u8] = include_bytes!(r"C:\Users\tomokazu\PycharmProjects\RetinaFace_ONNX_Export\onnx_dest\arcface_unpg_f16_with_fp32_io.onnx");
+static FACE_FEATURE_MODEL: &[u8] = include_bytes!(r"../../arcface_unpg_f16_with_fp32_io.onnx");
 
 async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(String, u128)>)>, sender: Sender<(Array<f32, IxDyn>, Vec<(String, u128)>)>) {
     ameba_blog_downloader::init_ort();
+    let shape_min = format!("input:1x3x{INFERENCE_SIZE}x{INFERENCE_SIZE}");
+    let shape_opt = format!("input:{BATCH_SIZE}x3x{INFERENCE_SIZE}x{INFERENCE_SIZE}");
+    let shape_max = format!("input:{BATCH_SIZE}x3x{INFERENCE_SIZE}x{INFERENCE_SIZE}");
+
     let mut model = Session::builder().unwrap()
         .with_execution_providers([
-            OpenVINOExecutionProvider::default().with_device_type("GPU").build().error_on_failure()
+            TensorRTExecutionProvider::default()
+                .with_max_workspace_size(2 * 1024 * 1024 * 1024) // 2 GB
+                .with_fp16(true)
+                .with_engine_cache(true)
+                .with_engine_cache_path("trt_cache")
+                .with_timing_cache(true)
+                .with_timing_cache_path("trt_cache")
+                .with_build_heuristics(true)
+                .with_context_memory_sharing(true)
+                .with_profile_min_shapes(&shape_min)
+                .with_profile_opt_shapes(&shape_opt)
+                .with_profile_max_shapes(&shape_max)
+                .build()
+                .error_on_failure(),
+            // OpenVINOExecutionProvider::default()
+            //     .with_device_type("GPU")
+            //     .with_precision("FP16")
+            //     .build().error_on_failure()
         ]).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
         .with_intra_threads(16).unwrap()

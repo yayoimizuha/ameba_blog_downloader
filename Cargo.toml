@@ -64,8 +64,8 @@ fast_image_resize = { version = "*" }
 half = { version = "*", features = ["default", "num-traits"] }
 tokio-stream = { version = "*", features = ["full"] }
 sha2 = { version = "*" }
-hdf5-metno = { version = "*", features = ["static"] }
-clap = { version = "*" }
+#hdf5-metno = { version = "*", features = ["static"] }
+clap = { version = "*", features = ["derive"] }
 #usls = { version = "0.1.0-beta.1" }
 bincode = { version = "*", features = ["serde"] }
 rusqlite = { version = "*", features = ["bundled"] }
