@@ -14,11 +14,13 @@ use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::{DirEntry, File};
+use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 use turbojpeg::{Decompressor, Image, PixelFormat};
 use twox_hash::XxHash3_128;
 
@@ -112,28 +114,26 @@ async fn main() {
         File::open(data_dir().join("embeddings_cache").join(format!("model_{model_hash}.bin"))).unwrap().read_to_end(&mut cache).unwrap();
         bincode::decode_from_slice(cache.as_slice(), config::standard()).unwrap().0
     } else { Entities(HashSet::new()) };
+    let sem = Arc::new(Semaphore::new(64));
     let mut all_files = Vec::new();
     for member_dir in data_dir().join("face_cropped").read_dir().unwrap() {
         let member_dir = member_dir.unwrap();
-        let code = |file_path: DirEntry| async move {
-            let path = file_path.path();
-            let mut buf = Vec::new();
-            tokio::fs::File::open(&path).await.unwrap().read_to_end(&mut buf).await.unwrap();
-            let hash = XxHash3_128::oneshot(buf.as_slice());
-            (buf, Entity { file_name: path.to_str().unwrap().to_owned(), file_hash: hash, embeddings: vec![] })
-        };
         let future = member_dir.path().read_dir().unwrap().map(|file_path| {
             let file_path = file_path.unwrap();
-            tokio::spawn(code(file_path))
-        }
-        ).collect::<Vec<_>>();
+            let sem = sem.clone();
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let path = file_path.path();
+                let mut buf = Vec::new();
+                tokio::fs::File::open(&path).await.unwrap().read_to_end(&mut buf).await.unwrap();
+                let hash = XxHash3_128::oneshot(buf.as_slice());
+                (buf, Entity { file_name: path.to_str().unwrap().to_owned(), file_hash: hash, embeddings: vec![] })
+            })
+        }).collect::<Vec<_>>();
         join_all(future).await.into_iter().for_each(|v| {
             let (buf, entity) = v.unwrap();
-            match entities.0.contains(&entity) {
-                false => {
-                    all_files.push((entity.file_name, buf, entity.file_hash))
-                }
-                _ => {}
+            if !entities.0.contains(&entity) {
+                all_files.push((entity.file_name, buf, entity.file_hash));
             }
         });
     }
