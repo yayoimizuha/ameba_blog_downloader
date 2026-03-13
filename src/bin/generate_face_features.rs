@@ -5,7 +5,7 @@ use fast_image_resize::{PixelType, ResizeOptions};
 use futures::future::join_all;
 use kdam::{tqdm, BarExt};
 use ndarray::{array, s, Array, Array3, Array4, IxDyn};
-use ort::ep::TensorRTExecutionProvider;
+use ort::ep::{OpenVINOExecutionProvider, TensorRTExecutionProvider};
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::{RunOptions, Session};
@@ -37,24 +37,24 @@ async fn inference(receiver: Receiver<(Tensor<f32>, Vec<(String, u128)>)>, sende
 
     let mut model = Session::builder().unwrap()
         .with_execution_providers([
-            TensorRTExecutionProvider::default()
-                .with_max_workspace_size(2 * 1024 * 1024 * 1024) // 2 GB
-                .with_fp16(true)
-                .with_engine_cache(true)
-                .with_engine_cache_path("trt_cache")
-                .with_timing_cache(true)
-                .with_timing_cache_path("trt_cache")
-                .with_build_heuristics(true)
-                .with_context_memory_sharing(true)
-                .with_profile_min_shapes(&shape_min)
-                .with_profile_opt_shapes(&shape_opt)
-                .with_profile_max_shapes(&shape_max)
-                .build()
-                .error_on_failure(),
-            // OpenVINOExecutionProvider::default()
-            //     .with_device_type("GPU")
-            //     .with_precision("FP16")
-            //     .build().error_on_failure()
+            // TensorRTExecutionProvider::default()
+            //     .with_max_workspace_size(2 * 1024 * 1024 * 1024) // 2 GB
+            //     .with_fp16(true)
+            //     .with_engine_cache(true)
+            //     .with_engine_cache_path("trt_cache")
+            //     .with_timing_cache(true)
+            //     .with_timing_cache_path("trt_cache")
+            //     .with_build_heuristics(true)
+            //     .with_context_memory_sharing(true)
+            //     .with_profile_min_shapes(&shape_min)
+            //     .with_profile_opt_shapes(&shape_opt)
+            //     .with_profile_max_shapes(&shape_max)
+            //     .build()
+            //     .error_on_failure(),
+            OpenVINOExecutionProvider::default()
+                .with_device_type("GPU")
+                .with_precision("FP16")
+                .build().error_on_failure()
         ]).unwrap()
         .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
         .with_intra_threads(16).unwrap()
